@@ -51,6 +51,7 @@ jobs:
           root = Path.cwd()
           ignored = {
               ".git",
+              ".cache",
               ".venv",
               "__pycache__",
               "build",
@@ -61,7 +62,7 @@ jobs:
 
           def walk_files():
               for dirpath, dirnames, filenames in os.walk(root):
-                  dirnames[:] = [d for d in dirnames if d not in ignored and not d.startswith(".cache")]
+                  dirnames[:] = [d for d in dirnames if d not in ignored]
                   current = Path(dirpath)
                   for filename in filenames:
                       yield current, filename
@@ -77,7 +78,9 @@ jobs:
           for current, filename in walk_files():
               if filename == "package.json":
                   ts_roots.add(normalize(current))
-              elif filename in {"pyproject.toml", "setup.py"} or filename.startswith("requirements"):
+              elif filename in {"pyproject.toml", "setup.py"} or (
+                  filename.startswith("requirements") and filename.endswith(".txt")
+              ):
                   python_roots.add(normalize(current))
               elif filename == "CMakeLists.txt":
                   cpp_roots.add(normalize(current))
@@ -209,7 +212,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -d tests ] || [ -f pytest.ini ] || grep -Eq '^\[tool\.pytest' pyproject.toml 2>/dev/null; then
+          if [ -d tests ] || [ -f pytest.ini ] || { [ -f pyproject.toml ] && grep -Eq '^\[tool\.pytest' pyproject.toml; }; then
             python -m pytest
           else
             python -m compileall .
