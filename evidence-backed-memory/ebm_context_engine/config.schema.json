@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EBM Service Configuration",
+  "description": "EBM 嵌入和 LLM 服务端点配置（OpenAI SDK 兼容）",
+  "type": "object",
+  "properties": {
+    "embedding": {
+      "type": "object",
+      "description": "嵌入服务配置（OpenAI 兼容 API）。对于 localhost/127.0.0.1 的本地端点，若未配置真实 API key，EBM 会自动补一个 dummy key 供 OpenAI SDK 调用。",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false, "description": "启用神经嵌入（禁用则回退到哈希投影）" },
+        "baseUrl": { "type": "string", "description": "嵌入 API 端点的基 URL" },
+        "model": { "type": "string", "default": "text-embedding-3-small", "description": "嵌入模型标识符" },
+        "apiKeyEnv": { "type": "string", "default": "EBM_EMBEDDING_API_KEY", "description": "保存 API 密钥的环境变量名。对于本地 localhost/127.0.0.1 端点可省略。" },
+        "apiKey": { "type": "string", "description": "直接 API 密钥（不建议用于生产环境）。对于本地 localhost/127.0.0.1 端点可省略。" },
+        "headers": { "type": "object", "description": "自定义 HTTP 标头", "additionalProperties": { "type": "string" } },
+        "dimension": { "type": "number", "description": "输出向量维度" },
+        "fallback": {
+          "type": "object",
+          "description": "当主 embedding 服务多次重试后仍失败时，回退到此本地/备用 embedding 服务",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false, "description": "启用 embedding fallback" },
+            "baseUrl": { "type": "string", "description": "fallback embedding 服务基 URL" },
+            "model": { "type": "string", "description": "fallback embedding 模型标识符" },
+            "apiKeyEnv": { "type": "string", "description": "fallback API 密钥环境变量名。对于本地 localhost/127.0.0.1 端点可省略。" },
+            "apiKey": { "type": "string", "description": "fallback API 密钥（如果服务需要）。对于本地 localhost/127.0.0.1 端点可省略。" },
+            "headers": { "type": "object", "description": "fallback 自定义 HTTP 标头", "additionalProperties": { "type": "string" } },
+            "dimension": { "type": "number", "description": "fallback 输出向量维度" }
+          },
+          "required": ["baseUrl", "model"]
+        }
+      },
+      "required": ["baseUrl", "model"]
+    },
+    "llm": {
+      "type": "object",
+      "description": "主 LLM 服务配置，用于 judge / 外部推理（OpenAI 兼容）",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false, "description": "启用 LLM 推理" },
+        "baseUrl": { "type": "string", "description": "聊天完成 API 端点的基 URL" },
+        "model": { "type": "string", "description": "LLM 模型标识符" },
+        "temperature": { "type": "number", "description": "采样温度，直接透传到 chat/completions.temperature" },
+        "max_tokens": { "type": "number", "description": "最大输出 token 数，透传到 chat/completions.max_tokens" },
+        "top_p": { "type": "number", "description": "nucleus sampling 参数，透传到 chat/completions.top_p" },
+        "stream": { "type": "boolean", "description": "是否使用流式 chat/completions 响应" },
+        "thinking": { "type": "object", "description": "透传给支持的 OpenAI-compatible 提供方的 thinking 配置" },
+        "apiKeyEnv": { "type": "string", "default": "EBM_LLM_API_KEY", "description": "保存 API 密钥的环境变量名" },
+        "apiKey": { "type": "string", "description": "直接 API 密钥" },
+        "headers": { "type": "object", "description": "自定义 HTTP 标头", "additionalProperties": { "type": "string" } }
+      },
+      "required": ["baseUrl", "model"]
+    },
+    "memllm": {
+      "type": "object",
+      "description": "内部记忆操作专用 LLM（意图分类、事实抽取、社区摘要等），建议使用小模型以降低成本和延迟",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false, "description": "启用 memllm 推理" },
+        "baseUrl": { "type": "string", "description": "聊天完成 API 端点的基 URL" },
+        "model": { "type": "string", "description": "memllm 模型标识符（建议: gpt-4o-mini, qwen2.5-7b 等小模型）" },
+        "temperature": { "type": "number", "description": "采样温度，直接透传到 chat/completions.temperature" },
+        "max_tokens": { "type": "number", "description": "最大输出 token 数，透传到 chat/completions.max_tokens" },
+        "top_p": { "type": "number", "description": "nucleus sampling 参数，透传到 chat/completions.top_p" },
+        "stream": { "type": "boolean", "description": "是否使用流式 chat/completions 响应" },
+        "thinking": { "type": "object", "description": "透传给支持的 OpenAI-compatible 提供方的 thinking 配置" },
+        "apiKeyEnv": { "type": "string", "default": "EBM_MEMLLM_API_KEY", "description": "保存 API 密钥的环境变量名" },
+        "apiKey": { "type": "string", "description": "直接 API 密钥" },
+        "headers": { "type": "object", "description": "自定义 HTTP 标头", "additionalProperties": { "type": "string" } }
+      },
+      "required": ["baseUrl", "model"]
+    },
+    "tuning_ingest": {
+      "type": "object",
+      "description": "知识图谱构建相关参数（修改后需重新 ingest）",
+      "properties": {
+        "dedupSimilarityThreshold": { "type": "number", "default": 0.95, "description": "语义去重合并的余弦相似度阈值（更高 = 更不激进）" },
+        "eventPromotionIndegreeThreshold": { "type": "number", "default": 3, "description": "EVENT→SALIENT_MEMORY 提升的最小入度" },
+        "rebuildChangeThreshold": { "type": "number", "default": 7, "description": "触发社区重建的最小累积变更数（节点+边）" },
+        "llmTruncationChars": { "type": "number", "default": 12000, "description": "LLM 提取/摘要的输入文本截断字符数" },
+        "confidenceCeiling": { "type": "number", "default": 0.97, "description": "LLM 提取的置信度硬上限" }
+      }
+    },
+    "tuning_qa": {
+      "type": "object",
+      "description": "查询组装和检索相关参数（可快速迭代）",
+      "properties": {
+        "graphRecallTopK": { "type": "number", "default": 10, "description": "总图形回忆候选数" },
+        "communityRecallTopK": { "type": "number", "default": 5, "description": "社区总结回忆数" },
+        "ledgerRecallTopK": { "type": "number", "default": 12, "description": "账本回忆候选数" },
+        "graphItemsLimit": { "type": "number", "default": 8, "description": "提示中包含的最大图形回忆项数" },
+        "ledgerItemsLimit": { "type": "number", "default": 10, "description": "提示中包含的最大账本事实数" },
+        "recallContentMaxTokens": { "type": "number", "default": 120, "description": "每项内容截断限制（令牌）" },
+        "episodicMaxTokens": { "type": "number", "default": 1200, "description": "情景证据的总令牌预算" },
+        "episodicHitsLimit": { "type": "number", "default": 3, "description": "排名前列的情景证据数" },
+        "episodicMessageWindow": { "type": "number", "default": 2, "description": "证据点前后的消息数" },
+        "sessionSummaryBudgetRatio": { "type": "number", "default": 0.4, "description": "分配给会话总结的预算比例" },
+        "sessionSummaryMaxTokens": { "type": "number", "default": 2000, "description": "会话总结令牌硬上限" },
+        "pinnedFactsLimit": { "type": "number", "default": 4, "description": "提升的固定事实数" },
+        "generalizedRecallDiscount": { "type": "number", "default": 0.8, "description": "广义回忆命中的得分折扣因子" }
+      }
+    },
+    "tuning_rrf": {
+      "type": "object",
+      "description": "Reciprocal Rank Fusion 多路融合参数",
+      "properties": {
+        "rrfK": { "type": "number", "default": 60, "description": "RRF 公式中的 k 值，控制排名融合的平滑度（标准值 60）" }
+      }
+    },
+    "tuning_ppr": {
+      "type": "object",
+      "description": "Personalized PageRank 参数",
+      "properties": {
+        "pprDefaultIterations": { "type": "number", "default": 8, "description": "PPR 默认迭代次数" },
+        "pprDamping": { "type": "number", "default": 0.85, "description": "PPR 阻尼系数（teleport probability = 1 - damping）" }
+      }
+    },
+    "tuning_graph": {
+      "type": "object",
+      "description": "图遍历和实体检索参数",
+      "properties": {
+        "maxHops": { "type": "number", "default": 2, "description": "多跳图扩展的最大跳数" },
+        "entitySeedSimThreshold": { "type": "number", "default": 0.6, "description": "实体种子匹配的语义相似度阈值" },
+        "generalizedVecSimThreshold": { "type": "number", "default": 0.4, "description": "广义回忆中社区成员匹配的向量相似度阈值" },
+        "multiHopBonus": { "type": "number", "default": 1.5, "description": "多跳路径节点的分数加成系数" }
+      }
+    },
+    "tuning_slowpath": {
+      "type": "object",
+      "description": "慢路径处理器和 SDK 超时参数",
+      "properties": {
+        "slowPathConcurrency": { "type": "number", "default": 3, "description": "慢路径并发数" },
+        "slowPathJobTimeoutMs": { "type": "number", "default": 0, "description": "慢路径作业超时（ms，0=无限）" },
+        "sdkTimeoutMs": { "type": "number", "default": 30000, "description": "SDK 推理超时（ms）" },
+        "sdkMaxRetries": { "type": "number", "default": 2, "description": "SDK 最大重试次数" }
+      }
+    }
+  }
+}

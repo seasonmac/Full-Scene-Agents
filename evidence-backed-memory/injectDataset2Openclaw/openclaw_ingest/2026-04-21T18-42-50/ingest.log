@@ -1,0 +1,26 @@
+=== OpenClaw Ingest Run ===
+dataset_dir: /Users/season/workspace/github/noteLM/injectDataset2Openclaw/dataset
+mode: replay
+session_layout: per-file
+dry_run: False
+glob: daily_report_0418.jsonl
+limit_files: 1
+request_timeout: 300s
+output_dir: /Users/season/workspace/github/noteLM/injectDataset2Openclaw/openclaw_ingest/2026-04-21T18-42-50
+ebm_bridge_mode: bootstrap
+ebm_flush: False
+ebm_base_url: http://127.0.0.1:18790
+ebm_db_path: /Users/season/.openclaw/memory/ebm_context_engine.sqlite
+
+[1/1] daily_report_0418.jsonl
+  user=news:dataset:daily_report_0418
+  session_key=agent:main:news/dataset/daily_report_0418
+  session_id=ingest-efdcf49d-b4ae-e838-c222-68af76d2cdea
+  transcript_path=/Users/season/.openclaw/agents/main/sessions/ingest-efdcf49d-b4ae-e838-c222-68af76d2cdea.jsonl
+  message_count=67 send_count=67
+  send 1/1 ok: appended 67 transcript messages
+  ebm bridge ok: mode=bootstrap bootstrap_imported=67 after_turn_messages=0
+
+=== Summary ===
+files: total=1 succeeded=1 failed=0
+messages: total=67 sent=67 failed=0

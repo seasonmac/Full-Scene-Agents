@@ -1,0 +1,111 @@
+{
+  "$schema": "./config.schema.json",
+  "embedding": {
+    "enabled": true,
+    "baseUrl": "http://127.0.0.1:8085/v1",
+    "apiKey": "sk-dummykeyforlocaltesting",
+    "model": "qwen3-embedding-0.6b",
+    "dimension": 1024,
+    "fallback": {
+      "enabled": true,
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "qwen/qwen3-embedding-4b",
+      "dimension": 2560,
+      "apiKey": "sk-or-v1-"
+    }
+  },
+  "rerank": {
+    "enabled": true,
+    "baseUrl": "http://127.0.0.1:8086/v1",
+    "apiKey": "sk-dummykeyforlocaltesting",
+    "model": "qwen3-reranker-0.6b"
+  },
+  "llm": {
+    "enabled": true,
+    "baseUrl": "https://api.ikuncode.cc/v1",
+    "model": "gpt-5.4",
+    "apiKey": "sk-",
+    "headers": {
+      "User-Agent": "claude-cli/2.0.76 (external, cli)",
+      "Authorization": "Bearer sk-"
+    },
+    "fallback": {
+      "enabled": true,
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "model": "kimi-k2-turbo-preview",
+      "apiKey": "sk-",
+      "temperature": 0.6,
+      "max_tokens": 32768,
+      "top_p": 1,
+      "stream": true
+    }
+  },
+  "memllm": {
+    "enabled": true,
+    "baseUrl": "https://api.ikuncode.cc/v1",
+    "model": "gpt-5.4",
+    "apiKey": "sk-",
+    "headers": {
+      "User-Agent": "claude-cli/2.0.76 (external, cli)",
+      "Authorization": "Bearer sk-"
+    },
+    "fallback": {
+      "enabled": true,
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "model": "kimi-k2-turbo-preview",
+      "apiKey": "sk-",
+      "temperature": 0.6,
+      "max_tokens": 32768,
+      "top_p": 1,
+      "stream": true
+    }
+  },
+  "tuning_ingest": {
+    "dedupSimilarityThreshold": 0.95,
+    "eventPromotionIndegreeThreshold": 3,
+    "rebuildChangeThreshold": 7,
+    "llmTruncationChars": 12000,
+    "confidenceCeiling": 0.97
+  },
+  "tuning_qa": {
+    "graphItemsLimit": 5,
+    "ledgerItemsLimit": 5,
+    "recallContentMaxTokens": 100,
+    "episodicMaxTokens": 300,
+    "episodicHitsLimit": 3,
+    "episodicMessageWindow": 2,
+    "sessionSummaryBudgetRatio": 0.4,
+    "sessionSummaryMaxTokens": 500,
+    "pinnedFactsLimit": 2,
+    "generalizedRecallDiscount": 0.8,
+    "graphRecallTopK": 5,
+    "communityRecallTopK": 6,
+    "ledgerRecallTopK": 6,
+    "c2fTopicK": 10,
+    "c2fEpisodeK": 10,
+    "c2fFactK": 30,
+    "c2fMaxFacts": 20,
+    "c2fMaxEpisodes": 8,
+    "c2fEpisodeSummaryMaxChars": 400,
+    "c2fFactContentMaxChars": 400
+  },
+  "tuning_rrf": {
+    "rrfK": 60
+  },
+  "tuning_ppr": {
+    "pprDefaultIterations": 8,
+    "pprDamping": 0.85
+  },
+  "tuning_graph": {
+    "maxHops": 2,
+    "entitySeedSimThreshold": 0.6,
+    "generalizedVecSimThreshold": 0.4,
+    "multiHopBonus": 1.5
+  },
+  "tuning_slowpath": {
+    "slowPathConcurrency": 3,
+    "slowPathJobTimeoutMs": 9000000,
+    "sdkTimeoutMs": 45000,
+    "sdkMaxRetries": 1
+  }
+}

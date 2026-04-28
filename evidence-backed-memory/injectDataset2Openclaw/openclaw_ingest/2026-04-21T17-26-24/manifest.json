@@ -1,0 +1,208 @@
+{
+  "dataset_dir": "/Users/season/workspace/github/noteLM/injectDataset2Openclaw/dataset",
+  "session_layout": "per-file",
+  "mode": "replay",
+  "dry_run": false,
+  "started_at": "2026-04-21T17:26:24.178531+08:00",
+  "finished_at": "2026-04-21T17:26:33.654177+08:00",
+  "totals": {
+    "files_total": 1,
+    "files_succeeded": 0,
+    "files_failed": 1,
+    "messages_total": 41,
+    "messages_sent": 41,
+    "messages_failed": 41
+  },
+  "sessions": [
+    {
+      "source_file": "/Users/season/workspace/github/noteLM/injectDataset2Openclaw/dataset/daily_report_0413.jsonl",
+      "file_stem": "daily_report_0413",
+      "user": "news:dataset:daily_report_0413",
+      "session_key": "agent:main:news/dataset/daily_report_0413",
+      "session_id": "ingest-fae76459-408c-7461-8d19-269a8702315b",
+      "transcript_path": "/Users/season/.openclaw/agents/main/sessions/ingest-fae76459-408c-7461-8d19-269a8702315b.jsonl",
+      "message_count": 41,
+      "send_count": 41,
+      "first_timestamp": 1776038400000,
+      "last_timestamp": 1776057540000,
+      "status": "failed",
+      "errors": [
+        "send 1/1 failed: EBM sidecar unavailable at http://127.0.0.1:18790"
+      ],
+      "requests": [
+        {
+          "index": 1,
+          "reply_preview": "",
+          "appended": [
+            {
+              "messageId": "8c03b305",
+              "role": "assistant"
+            },
+            {
+              "messageId": "342b4f7d",
+              "role": "user"
+            },
+            {
+              "messageId": "19eb51f2",
+              "role": "assistant"
+            },
+            {
+              "messageId": "39af4cc1",
+              "role": "user"
+            },
+            {
+              "messageId": "01ca851e",
+              "role": "assistant"
+            },
+            {
+              "messageId": "e8b4b28b",
+              "role": "user"
+            },
+            {
+              "messageId": "7cdd6eca",
+              "role": "assistant"
+            },
+            {
+              "messageId": "f019313b",
+              "role": "user"
+            },
+            {
+              "messageId": "bf192825",
+              "role": "assistant"
+            },
+            {
+              "messageId": "780b47c0",
+              "role": "user"
+            },
+            {
+              "messageId": "7cbb6c2b",
+              "role": "assistant"
+            },
+            {
+              "messageId": "7ec0f076",
+              "role": "user"
+            },
+            {
+              "messageId": "009b6bad",
+              "role": "assistant"
+            },
+            {
+              "messageId": "7fac4f8a",
+              "role": "user"
+            },
+            {
+              "messageId": "daaf7282",
+              "role": "assistant"
+            },
+            {
+              "messageId": "94ef026b",
+              "role": "user"
+            },
+            {
+              "messageId": "f38b631b",
+              "role": "assistant"
+            },
+            {
+              "messageId": "ce5ad858",
+              "role": "user"
+            },
+            {
+              "messageId": "ddf8e758",
+              "role": "assistant"
+            },
+            {
+              "messageId": "df58df82",
+              "role": "user"
+            },
+            {
+              "messageId": "254c6a73",
+              "role": "assistant"
+            },
+            {
+              "messageId": "efbfb857",
+              "role": "user"
+            },
+            {
+              "messageId": "1617df7e",
+              "role": "assistant"
+            },
+            {
+              "messageId": "04f019e0",
+              "role": "user"
+            },
+            {
+              "messageId": "c3e85faa",
+              "role": "assistant"
+            },
+            {
+              "messageId": "0e0855ee",
+              "role": "user"
+            },
+            {
+              "messageId": "040b1ff3",
+              "role": "assistant"
+            },
+            {
+              "messageId": "9f46f16e",
+              "role": "user"
+            },
+            {
+              "messageId": "d2b85fbc",
+              "role": "assistant"
+            },
+            {
+              "messageId": "37833212",
+              "role": "user"
+            },
+            {
+              "messageId": "6acb3a80",
+              "role": "assistant"
+            },
+            {
+              "messageId": "c0706204",
+              "role": "user"
+            },
+            {
+              "messageId": "6053a4fc",
+              "role": "assistant"
+            },
+            {
+              "messageId": "94fceb90",
+              "role": "user"
+            },
+            {
+              "messageId": "c079b64d",
+              "role": "assistant"
+            },
+            {
+              "messageId": "f2074436",
+              "role": "user"
+            },
+            {
+              "messageId": "4733e67a",
+              "role": "assistant"
+            },
+            {
+              "messageId": "4810f71c",
+              "role": "user"
+            },
+            {
+              "messageId": "33a50c57",
+              "role": "assistant"
+            },
+            {
+              "messageId": "86d27121",
+              "role": "user"
+            },
+            {
+              "messageId": "647bf2cb",
+              "role": "assistant"
+            }
+          ]
+        }
+      ],
+      "ebm": null,
+      "ebm_db_stats": null
+    }
+  ]
+}

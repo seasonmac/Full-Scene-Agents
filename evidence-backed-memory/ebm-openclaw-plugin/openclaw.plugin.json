@@ -1,0 +1,119 @@
+{
+  "id": "ebm-context-engine",
+  "name": "EBM Python Memory Engine",
+  "description": "Evidence-Backed Memory (Python) — three-plane memory architecture with HTTP sidecar proxy to ebm_context_engine engine",
+  "version": "0.3.0",
+  "kind": "context-engine",
+  "enabledByDefault": false,
+  "minOpenClaw": ">=2026.3.7",
+  "uiHints": {
+    "mode": {
+      "label": "Mode",
+      "help": "local = spawn Python sidecar; remote = connect to an existing EBM server"
+    },
+    "pythonCommand": {
+      "label": "Python Command",
+      "help": "Python 3.12+ executable path for local mode"
+    },
+    "port": {
+      "label": "Port",
+      "help": "Local sidecar port",
+      "advanced": true
+    },
+    "baseUrl": {
+      "label": "Remote Base URL",
+      "help": "Remote EBM server base URL for remote mode"
+    },
+    "ebmPyPath": {
+      "label": "EBM Path",
+      "help": "Workspace root containing ebm_context_engine/ and ebm/config.json"
+    },
+    "configJsonPath": {
+      "label": "Config JSON",
+      "help": "Path to ebm/config.json",
+      "advanced": true
+    },
+    "dbPath": {
+      "label": "SQLite Path",
+      "help": "SQLite database path"
+    },
+    "slowPathEnabled": {
+      "label": "Slow Path",
+      "help": "Enable background slow-path distillation"
+    },
+    "timeoutMs": {
+      "label": "Timeout (ms)",
+      "help": "Per-request HTTP timeout",
+      "advanced": true
+    },
+    "healthTimeoutMs": {
+      "label": "Health Timeout",
+      "help": "Startup health check timeout",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": ["local", "remote"],
+        "default": "local",
+        "description": "local = spawn Python sidecar; remote = use existing HTTP server"
+      },
+      "pythonCommand": {
+        "type": "string",
+        "default": "python3",
+        "description": "Python executable path (3.12+ required)"
+      },
+      "port": {
+        "type": "number",
+        "default": 18790,
+        "minimum": 1,
+        "maximum": 65535,
+        "description": "Local sidecar HTTP port (local mode only)"
+      },
+      "baseUrl": {
+        "type": "string",
+        "description": "API base URL (remote mode). Supports ${ENV} expansion. Default: http://127.0.0.1:18790"
+      },
+      "ebmPyPath": {
+        "type": "string",
+        "description": "ebm_context_engine project root directory (contains ebm_context_engine/ package). Supports ~ and ${ENV}"
+      },
+      "configJsonPath": {
+        "type": "string",
+        "description": "Path to ebm/config.json (optional, default: <ebmPyPath>/ebm/config.json)"
+      },
+      "dbPath": {
+        "type": "string",
+        "description": "SQLite database path (default: ~/.openclaw/memory/ebm_context_engine.sqlite)"
+      },
+      "slowPathEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable slow path background distillation"
+      },
+      "timeoutMs": {
+        "type": "number",
+        "default": 120000,
+        "minimum": 1000,
+        "description": "Per-request HTTP timeout in milliseconds"
+      },
+      "healthTimeoutMs": {
+        "type": "number",
+        "default": 30000,
+        "minimum": 1000,
+        "description": "Health check timeout during startup in milliseconds"
+      },
+      "portScanRange": {
+        "type": "number",
+        "default": 10,
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Max port scan range when preferred port is occupied"
+      }
+    }
+  }
+}

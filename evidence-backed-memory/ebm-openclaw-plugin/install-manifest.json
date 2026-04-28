@@ -1,0 +1,30 @@
+{
+  "manifestVersion": "1.0",
+  "pluginVersion": "0.3.0",
+  "plugin": {
+    "id": "ebm-context-engine",
+    "kind": "context-engine",
+    "slot": "contextEngine"
+  },
+  "files": {
+    "required": [
+      "src/index.ts",
+      "src/config.ts",
+      "src/client.ts",
+      "src/context-engine.ts",
+      "src/process-manager.ts",
+      "package.json",
+      "openclaw.plugin.json"
+    ],
+    "optional": [
+      "src/shims.d.ts",
+      "README.md",
+      "skills/install-ebm-py-memory/SKILL.md",
+      "vitest.config.ts",
+      "tsconfig.json"
+    ]
+  },
+  "compatibility": {
+    "minOpenclawVersion": "2026.3.7"
+  }
+}

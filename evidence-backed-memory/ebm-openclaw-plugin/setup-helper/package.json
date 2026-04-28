@@ -1,0 +1,9 @@
+{
+  "name": "@ebm/openclaw-py-engine-setup-helper",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ebm-py-install": "./install.js"
+  }
+}
