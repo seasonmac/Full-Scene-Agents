@@ -1,0 +1,277 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('{0}-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+env:
+  NODE_VERSION: "20.x"
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  prepare:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    outputs:
+      ts_projects: ${{ steps.detect.outputs.ts_projects }}
+      python_projects: ${{ steps.detect.outputs.python_projects }}
+      cpp_projects: ${{ steps.detect.outputs.cpp_projects }}
+      has_projects: ${{ steps.detect.outputs.has_projects }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+
+      - name: Detect project manifests
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path.cwd()
+          ignored = {
+              ".git",
+              ".cache",
+              ".venv",
+              "__pycache__",
+              "build",
+              "dist",
+              "node_modules",
+              "out",
+          }
+
+          def walk_files():
+              for dirpath, dirnames, filenames in os.walk(root):
+                  dirnames[:] = [d for d in dirnames if d not in ignored]
+                  current = Path(dirpath)
+                  for filename in filenames:
+                      yield current, filename
+
+          def normalize(path: Path) -> str:
+              rel = path.relative_to(root)
+              return "." if str(rel) == "." else rel.as_posix()
+
+          ts_roots = set()
+          python_roots = set()
+          cpp_roots = set()
+
+          for current, filename in walk_files():
+              if filename == "package.json":
+                  ts_roots.add(normalize(current))
+              elif filename in {"pyproject.toml", "setup.py"} or (
+                  filename.startswith("requirements") and filename.endswith(".txt")
+              ):
+                  python_roots.add(normalize(current))
+              elif filename == "CMakeLists.txt":
+                  cpp_roots.add(normalize(current))
+
+          outputs = {
+              "ts_projects": json.dumps(sorted(ts_roots)),
+              "python_projects": json.dumps(sorted(python_roots)),
+              "cpp_projects": json.dumps(sorted(cpp_roots)),
+              "has_projects": str(bool(ts_roots or python_roots or cpp_roots)).lower(),
+          }
+
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a", encoding="utf-8") as fh:
+              for key, value in outputs.items():
+                  print(f"{key}={value}", file=fh)
+          PY
+
+      - name: Report detected projects
+        run: |
+          echo "TypeScript projects: ${{ steps.detect.outputs.ts_projects }}"
+          echo "Python projects: ${{ steps.detect.outputs.python_projects }}"
+          echo "C++ projects: ${{ steps.detect.outputs.cpp_projects }}"
+
+  typescript:
+    needs: prepare
+    if: needs.prepare.outputs.ts_projects != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.prepare.outputs.ts_projects) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ matrix.project }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run available npm scripts
+        run: |
+          set -euo pipefail
+
+          node <<'EOF'
+          const fs = require("node:fs");
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const scripts = packageJson.scripts ?? {};
+          const { spawnSync } = require("node:child_process");
+
+          const scriptOrder = ["lint", "typecheck", "test", "build"];
+          const runnable = scriptOrder.filter((name) => typeof scripts[name] === "string");
+
+          if (runnable.length === 0) {
+            console.log("No standard npm scripts detected; skipping.");
+            process.exit(0);
+          }
+
+          for (const script of runnable) {
+            const result = spawnSync("npm", ["run", script], { stdio: "inherit" });
+            if (result.status !== 0) {
+              process.exit(result.status ?? 1);
+            }
+          }
+          EOF
+
+  python:
+    needs: prepare
+    if: needs.prepare.outputs.python_projects != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.prepare.outputs.python_projects) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ matrix.project }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          for requirements_file in requirements.txt requirements-dev.txt requirements-test.txt; do
+            if [ -f "$requirements_file" ]; then
+              python -m pip install -r "$requirements_file"
+            fi
+          done
+
+          if [ -f pyproject.toml ] || [ -f setup.py ]; then
+            python -m pip install -e .
+          fi
+
+      - name: Run available Python checks
+        run: |
+          set -euo pipefail
+
+          should_run_pytest=false
+          if [ -d tests ] || [ -f pytest.ini ]; then
+            should_run_pytest=true
+          elif [ -f pyproject.toml ] && grep -Eq '^\[tool\.pytest(\.ini_options)?\]' pyproject.toml; then
+            should_run_pytest=true
+          fi
+
+          if [ "$should_run_pytest" = true ]; then
+            python -m pytest
+          else
+            python -m compileall .
+          fi
+
+  cpp:
+    needs: prepare
+    if: needs.prepare.outputs.cpp_projects != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.prepare.outputs.cpp_projects) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ matrix.project }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build-ci -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: |
+          set -euo pipefail
+
+          cmake --build build-ci --parallel
+
+      - name: Test
+        run: |
+          set -euo pipefail
+
+          ctest --test-dir build-ci --output-on-failure
+
+  no-projects:
+    needs: prepare
+    if: needs.prepare.outputs.has_projects == 'false'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: No project manifests detected
+        run: echo "No TypeScript, Python, or CMake-based projects were detected yet."
