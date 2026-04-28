@@ -1,0 +1,55 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "localsign",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/season/workspace/github/opentmp/apps/HarmonyOS/signhap/openclaw.cer",
+          "keyAlias": "key0",
+          "keyPassword": "00000019283C5C9429FBE879E9DFFAA398D1F4F3EBC6C4EFD33DFAF663171381547518AFCCBBD6A137",
+          "profile": "/Users/season/workspace/github/opentmp/apps/HarmonyOS/signhap/openclawDebug.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/season/workspace/github/opentmp/apps/HarmonyOS/signhap/debugkey.p12",
+          "storePassword": "000000194F7C340FEC632DCCBA9DD910A4CB81E5CBDC016342128ED718B6A0B2FAB03496ED82D4AD0D"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "targetSdkVersion": "6.0.0(20)",
+        "compatibleSdkVersion": "6.0.0(20)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

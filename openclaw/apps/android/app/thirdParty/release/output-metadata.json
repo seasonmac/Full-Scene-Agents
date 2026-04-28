@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "artifactType": {
+    "type": "APK",
+    "kind": "Directory"
+  },
+  "applicationId": "ai.openclaw.app",
+  "variantName": "thirdPartyRelease",
+  "elements": [
+    {
+      "type": "SINGLE",
+      "filters": [],
+      "attributes": [],
+      "versionCode": 2026042200,
+      "versionName": "2026.4.22",
+      "outputFile": "openclaw-2026.4.22-thirdParty-release.apk"
+    }
+  ],
+  "elementType": "File",
+  "baselineProfiles": [
+    {
+      "minApi": 28,
+      "maxApi": 30,
+      "baselineProfiles": [
+        "baselineProfiles/1/openclaw-2026.4.22-thirdParty-release.dm"
+      ]
+    },
+    {
+      "minApi": 31,
+      "maxApi": 2147483647,
+      "baselineProfiles": [
+        "baselineProfiles/0/openclaw-2026.4.22-thirdParty-release.dm"
+      ]
+    }
+  ],
+  "minSdkVersionForDexing": 31
+}
