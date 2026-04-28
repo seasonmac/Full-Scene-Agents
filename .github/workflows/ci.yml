@@ -21,7 +21,7 @@ concurrency:
 
 env:
   NODE_VERSION: "20.x"
-  PYTHON_VERSION: "3.11.x"
+  PYTHON_VERSION: "3.11"
 
 jobs:
   prepare:
@@ -216,7 +216,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -d tests ] || [ -f pytest.ini ] || { [ -f pyproject.toml ] && grep -Eq '^\[tool\.pytest(\.ini_options)?\]' pyproject.toml; }; then
+          should_run_pytest=false
+          if [ -d tests ] || [ -f pytest.ini ]; then
+            should_run_pytest=true
+          elif [ -f pyproject.toml ] && grep -Eq '^\[tool\.pytest(\.ini_options)?\]' pyproject.toml; then
+            should_run_pytest=true
+          fi
+
+          if [ "$should_run_pytest" = true ]; then
             python -m pytest
           else
             python -m compileall .
@@ -247,7 +254,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          cmake -S . -B build-ci -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build-ci -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
         run: |
