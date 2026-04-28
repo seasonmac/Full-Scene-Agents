@@ -1,0 +1,61 @@
+{
+  "strictness": 2,
+  "triggerOnUpdates": true,
+  "ignorePatterns": "node_modules/**\ndist/**\nbuild/**\nout/**\ncoverage/**\n.venv/**\n__pycache__/**\n*.pyc",
+  "output": {
+    "summarySection": {
+      "included": true,
+      "collapsible": false
+    },
+    "issuesTableSection": {
+      "included": true,
+      "collapsible": true
+    },
+    "confidenceScoreSection": {
+      "included": true,
+      "collapsible": true
+    }
+  },
+  "customContext": {
+    "rules": [
+      {
+        "id": "plugin-contract-compatibility",
+        "rule": "Treat plugin entrypoints, manifests, schemas, and runtime configuration contracts as compatibility-sensitive. Flag removals or incompatible changes unless the pull request clearly documents a breaking change.",
+        "scope": [
+          "**/*"
+        ],
+        "severity": 2
+      },
+      {
+        "id": "typescript-python-cpp-boundaries",
+        "rule": "Review TypeScript, Python, and C++ integration points carefully. Changes that cross language boundaries must keep serialization formats, field names, and calling conventions aligned.",
+        "scope": [
+          "**/*"
+        ],
+        "severity": 2
+      },
+      {
+        "id": "generated-and-binary-artifacts",
+        "rule": "Prefer source changes over generated outputs. Flag committed build products, vendored dependencies, large binaries, or machine-generated files unless they are explicitly required for release or test fixtures.",
+        "scope": [
+          "**/*"
+        ],
+        "severity": 1
+      },
+      {
+        "id": "plugin-safety",
+        "rule": "Be strict about subprocess execution, shell command construction, filesystem access, network calls, and secret handling in agents or plugins. Flag untrusted input flows, unsafe defaults, and missing validation.",
+        "scope": [
+          "**/*"
+        ],
+        "severity": 2
+      }
+    ],
+    "files": [
+      {
+        "path": "README.md",
+        "description": "High-level repository overview for the plugin collection."
+      }
+    ]
+  }
+}
