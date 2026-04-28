@@ -1,7 +1,7 @@
 {
   "strictness": 2,
   "triggerOnUpdates": true,
-  "ignorePatterns": "node_modules/**\ndist/**\nbuild/**\nout/**\ncoverage/**\n.venv/**\n__pycache__/**\n*.pyc",
+  "ignorePatterns": "node_modules/**\ndist/**\nbuild/**\nout/**\ncoverage/**\n.cache/**\n.venv/**\n__pycache__/**\n*.pyc",
   "output": {
     "summarySection": {
       "included": true,
