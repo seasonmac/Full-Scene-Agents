@@ -99,6 +99,7 @@ export class A2UIMapper {
       const pi = new PlanItem();
       pi.label = A2UIMapper.str(it, 'label');
       pi.value = A2UIMapper.str(it, 'value');
+      pi.icon = A2UIMapper.str(it, 'icon');
       b.items.push(pi);
     }
     return b;

@@ -21,7 +21,6 @@ const C_MUTED: string = '#EFF2F5';
 const C_MUTED_FG: string = '#6B7280';
 const C_FOREGROUND: string = '#14181C';
 const C_BORDER: string = '#E2E5EA';
-const C_SUCCESS_SOFT: string = '#E4F6E9';
 const C_USER_BUBBLE: string = '#2563EB';
 const C_USER_TEXT: string = '#FFFFFF';
 const C_INPUT_BG: string = '#EFF4FF';
@@ -83,8 +82,9 @@ export struct ChatPage {
 
   build() {
     Column() {
-      this.SessionTabs();
-      this.SessionLinkCard();
+      this.ChatHeader();
+      this.HeaderSessionPanel();
+      this.WorkflowProgress();
 
       if (this.chatErrorState.length > 0) {
         this.ChatErrorRail(this.chatErrorState);
@@ -99,23 +99,36 @@ export struct ChatPage {
     .backgroundColor(C_BG);
   }
 
-  @Builder SessionTabs() {
-    Row() {
-      Row({ space: 24 }) {
-        this.SessionTab(
-          this.localizedText('common_main', 'Main'),
-          this.chatSessionKeyState === this.viewModel.mainSessionKey,
-          () => {
-            this.viewModel.switchChatSession(this.viewModel.mainSessionKey);
-            this.showSessionList = false;
-          }
-        );
+  @Builder ChatHeader() {
+    Row({ space: 12 }) {
+      Column({ space: 4 }) {
+        Text(this.currentSessionLabel())
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(C_FOREGROUND)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis });
 
-        if (this.chatSessionKeyState !== this.viewModel.mainSessionKey) {
-          this.SessionTab(this.friendlySessionName(this.chatSessionKeyState), true, () => {});
+        Row({ space: 8 }) {
+          Text(this.chatSessionKeyState)
+            .fontSize(12)
+            .fontColor(C_MUTED_FG)
+            .fontFamily('monospace')
+            .layoutWeight(1)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis });
+
+          Text('⧉')
+            .fontSize(14)
+            .fontColor(C_MUTED_FG)
+            .onClick(() => {
+              this.copySessionKey();
+            });
         }
+        .width('100%');
       }
-      .layoutWeight(1);
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start);
 
       Button({ type: ButtonType.Normal }) {
         Row({ space: 6 }) {
@@ -139,58 +152,23 @@ export struct ChatPage {
       });
     }
     .width('100%')
-    .padding({ left: 4, right: 4, top: 12, bottom: 2 });
+    .padding({ left: 4, right: 4, top: 12, bottom: 8 });
   }
 
-  @Builder SessionTab(label: string, active: boolean, onTap: () => void) {
-    Column({ space: 4 }) {
-      Text(label)
-        .fontSize(17)
-        .fontWeight(active ? FontWeight.Bold : FontWeight.Normal)
-        .fontColor(active ? C_FOREGROUND : C_MUTED_FG)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis });
-
-      if (active) {
-        Divider()
-          .width(28)
-          .strokeWidth(3)
-          .color(C_PRIMARY)
-          .lineCap(LineCapStyle.Round);
+  @Builder HeaderSessionPanel() {
+    if (this.showSessionList) {
+      Column() {
+        this.SessionList();
       }
+      .margin({ bottom: 8 });
     }
-    .padding({ top: 6, bottom: 4 })
-    .onClick(() => {
-      onTap();
-    });
   }
 
-  @Builder SessionLinkCard() {
-    Row({ space: 12 }) {
-      Text('🔗')
-        .fontSize(18);
-
-      Text(this.chatSessionKeyState)
-        .fontSize(13)
-        .fontColor('#3D4452')
-        .fontFamily('monospace')
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis });
-
-      Text('⧉')
-        .fontSize(18)
-        .fontColor(C_MUTED_FG)
-        .onClick(() => {
-          this.copySessionKey();
-        });
+  @Builder WorkflowProgress() {
+    if (this.shouldShowWorkflowProgress()) {
+      FlowProgressBar({ activePhase: this.currentWorkflowPhase() })
+        .margin({ bottom: 8 });
     }
-    .width('100%')
-    .margin({ top: 6, bottom: 6 })
-    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-    .backgroundColor(C_CARD)
-    .borderRadius(18)
-    .shadow({ radius: 10, color: '#0F000000', offsetX: 0, offsetY: 2 });
   }
 
   private isActiveSession(session: ChatSessionEntry): boolean {
@@ -280,32 +258,30 @@ export struct ChatPage {
     return this.flowPhaseState.length > 0;
   }
 
+  private shouldShowWorkflowProgress(): boolean {
+    return this.hasStructuredFlow() && this.currentWorkflowPhase().length > 0;
+  }
+
+  private currentWorkflowPhase(): string {
+    if (this.flowPhaseState.length > 0) {
+      return this.flowPhaseState;
+    }
+    for (let i = this.flowBlocksState.length - 1; i >= 0; i--) {
+      const phase = this.flowBlocksState[i].phase;
+      if (phase.length > 0) {
+        return phase;
+      }
+    }
+    return '';
+  }
+
   @Builder FlowTimeline() {
     Column({ space: 10 }) {
       ForEach(this.flowBlocksState, (block: UIBlock, index: number) => {
-        // 阶段切换处插入进度条快照（参照 ReplayView）
-        if (this.shouldShowBarBefore(index)) {
-          FlowProgressBar({ activePhase: block.phase })
-            .margin({ top: 4, bottom: 2 });
-        }
         this.FlowBlock(block, index);
       }, (block: UIBlock, index: number) => this.flowBlockKey(block, index));
     }
     .width('100%');
-  }
-
-  private shouldShowBarBefore(index: number): boolean {
-    if (index < 0 || index >= this.flowBlocksState.length) {
-      return false;
-    }
-    const phase = this.flowBlocksState[index].phase;
-    if (phase.length === 0) {
-      return false;
-    }
-    if (index === 0) {
-      return true;
-    }
-    return this.flowBlocksState[index - 1].phase !== phase;
   }
 
   private flowBlockKey(block: UIBlock, index: number): string {
@@ -554,12 +530,19 @@ export struct ChatPage {
       Circle()
         .width(44)
         .height(44)
-        .fill(isUser ? C_PRIMARY : C_SUCCESS_SOFT);
+        .fill(C_PRIMARY);
 
-      Text((isUser ? $r('app.string.chat_user_avatar_text') : $r('app.string.chat_assistant_avatar_text')))
-        .fontSize(14)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(isUser ? '#FFFFFF' : '#2E7D46');
+      if (isUser) {
+        Text($r('app.string.chat_user_avatar_text'))
+          .fontSize(14)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#FFFFFF');
+      } else {
+        Image($r('app.media.lucide_bot'))
+          .width(24)
+          .height(24)
+          .objectFit(ImageFit.Contain);
+      }
     }
     .width(44)
     .height(44);
@@ -763,10 +746,6 @@ export struct ChatPage {
         this.ThinkingOptions();
       }
 
-      if (this.showSessionList) {
-        this.SessionList();
-      }
-
       if (this.showSkillLaunchers) {
         this.SkillLauncherPanel();
       }
@@ -862,6 +841,24 @@ export struct ChatPage {
       .width('100%');
 
       Row({ space: 10 }) {
+        Button({ type: ButtonType.Normal }) {
+          Column({ space: 4 }) {
+            Text('🆕')
+              .fontSize(22);
+            Text('创建新会话')
+              .fontSize(12)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(C_FOREGROUND);
+          }
+        }
+        .width(92)
+        .height(72)
+        .backgroundColor(C_MUTED)
+        .borderRadius(14)
+        .onClick(() => {
+          this.startNewSession();
+        });
+
         Button({ type: ButtonType.Normal }) {
           Column({ space: 4 }) {
             Text('🧩')
@@ -1017,6 +1014,16 @@ export struct ChatPage {
     }
 
     this.viewModel.sendChat(message, this.chatThinkingLevelState, []);
+  }
+
+  private startNewSession(): void {
+    if (!this.canOpenSkillLaunchers()) {
+      return;
+    }
+    this.messageText = '';
+    this.clearSkillLauncher();
+    this.suppressComposerInputFocusRestore();
+    this.viewModel.sendChat('/new', this.chatThinkingLevelState, [], '🆕 创建新会话');
   }
 
   private clearSkillLauncher(): void {

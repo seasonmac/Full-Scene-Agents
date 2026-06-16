@@ -9,6 +9,7 @@
  */
 
 export const A2UI_CATALOG_ID: string = 'intentx.app:cards@1';
+export const A2UI_CARD_CAPABILITY: string = 'a2ui:' + A2UI_CATALOG_ID;
 
 /** The 6 custom component names = the only legal `component` values. */
 export const A2UI_COMPONENTS: string[] = [

@@ -35,6 +35,7 @@ export class ApproachItem {
 export class PlanItem {
   label: string = '';
   value: string = '';
+  icon: string = '';
 }
 
 export class SkillStep {

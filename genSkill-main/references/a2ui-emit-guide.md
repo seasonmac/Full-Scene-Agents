@@ -49,6 +49,13 @@ Optional fields: `ClarifyQuestion.preamble/questionIndex/totalQuestions/options[
 - **writing-plans** plan confirmation (the "用户交互流程描述" + "这样创建可以吗？") →
   `PlanConfirm`: `taskTitle` = the goal; `items` = the 6 plain-language lines
   (你给我 / 我会 / 开始方式 / 完成后 / 如果缺东西 / 我不会做的事); `question` = "这样创建可以吗？".
+  Emit the plan as A2UI only; do not also output the same numbered prose summary
+  outside the block. Use `icon` to help the native card show a flow diagram:
+
+```a2ui
+{"createSurface":{"surfaceId":"plan-confirm-1","catalogId":"intentx.app:cards@1"}}
+{"updateComponents":{"surfaceId":"plan-confirm-1","components":[{"id":"root","component":"PlanConfirm","phase":"customize","taskTitle":"把平时发的健康截图，每周日自动汇总成周报并发送到微信","items":[{"label":"你给我","value":"随时发健康截图，不用等到周日","icon":"input"},{"label":"我会","value":"收到截图时先存档；每周日读取本周所有截图并提取步数、睡眠、心率等数据","icon":"process"},{"label":"开始方式","value":"每周日定时自动运行，不需要你说任何话","icon":"schedule"},{"label":"完成后","value":"生成健康周报并推送到微信","icon":"output"},{"label":"如果缺东西","value":"没有截图时直接跳过这一周","icon":"warning"},{"label":"我不会做的事","value":"不会自动读取你的健康账号，也不会替你操作外部账号","icon":"boundary"}],"question":"这样创建可以吗？","confirmAction":{"name":"confirmPlan"}}]}}
+```
 - **writing-skills** file writes → one `SkillCreate` with a `steps[]` entry per
   written file (`status:"done"`, `label:"写入 <最后两段路径>"`); failures as
   `status:"error"` with the raw output in `detail`. Errors do not block.
@@ -57,7 +64,8 @@ Optional fields: `ClarifyQuestion.preamble/questionIndex/totalQuestions/options[
 
 ## Capability negotiation
 
-The client declares support during handshake (A2UI `clientUiCapabilities` with
+The client declares support during handshake as capability
+`a2ui:intentx.app:cards@1` (or equivalent A2UI `clientUiCapabilities` with
 `catalogId: intentx.app:cards@1`). Only emit A2UI when that support is present;
 otherwise emit the plain-text form. Runtimes without a renderer (web/CLI) thus
 never see raw JSON.

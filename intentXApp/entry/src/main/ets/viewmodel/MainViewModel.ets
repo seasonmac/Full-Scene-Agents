@@ -23,7 +23,7 @@ import { RawTurn, ReplayResult, UIBlock } from '../model/FlowModels';
 import { StreamUIAdapter } from '../service/StreamUIAdapter';
 import { A2UIParser } from '../service/A2UIParser';
 import { A2UIMapper } from '../service/A2UIMapper';
-import { A2UIScanResult, A2UIValidationError } from '../model/A2UIModels';
+import { A2UI_CARD_CAPABILITY, A2UIScanResult, A2UIValidationError } from '../model/A2UIModels';
 
 export class CameraHudInfo {
   active: boolean = false;
@@ -1083,6 +1083,7 @@ export class MainViewModel {
     const options = GatewaySession.defaultOperatorOptions();
     options.client.displayName = this.displayName || 'HarmonyOS Device';
     options.client.instanceId = this.instanceId;
+    options.caps = [A2UI_CARD_CAPABILITY];
     return options;
   }
 

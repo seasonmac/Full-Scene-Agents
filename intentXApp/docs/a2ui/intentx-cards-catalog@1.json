@@ -96,7 +96,8 @@
       "type": "object",
       "properties": {
         "label": { "type": "string", "description": "Plain-language dimension, e.g. \"你给我\"/\"我会\"/\"开始方式\"." },
-        "value": { "type": "string" }
+        "value": { "type": "string" },
+        "icon": { "type": "string", "description": "Optional short icon token rendered in the flow diagram, e.g. \"input\"/\"process\"/\"schedule\"/\"output\"/\"warning\"/\"boundary\"." }
       },
       "required": ["label", "value"],
       "additionalProperties": false
