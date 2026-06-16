@@ -70,8 +70,8 @@ export struct PostOnboardingTabs {
         //   ScreenPage({ viewModel: this.viewModel });
         } else if (this.activeTab === 4) {
           SettingsPage({ viewModel: this.viewModel });
-        // } else if (this.activeTab === 5) {
-        //   ImportPage({ viewModel: this.viewModel });
+        } else if (this.activeTab === 5) {
+          ImportPage({ viewModel: this.viewModel });
         // } else if (this.activeTab === 6) {
         //   DebugPage({ viewModel: this.viewModel });
         }
@@ -134,7 +134,7 @@ export struct PostOnboardingTabs {
       // this.TabItem(2, this.localizedText('tab_voice', 'Voice'), '🎙️');
       // this.TabItem(3, this.localizedText('tab_screen', 'Screen'), '🖥️');
       this.TabItem(4, this.localizedText('tab_settings', 'Settings'), '⚙️');
-      // this.TabItem(5, this.localizedText('tab_import', 'Import'), '📥');
+      this.TabItem(5, this.localizedText('tab_import', 'Import'), '📥');
       // this.TabItem(6, this.localizedText('tab_debug', 'Debug'), '🔧');
     }
     .width('100%')

@@ -188,7 +188,7 @@ export class PhotoCaptureService {
           : '/ImageData';
         console.info(SHARE_TAG + ' sendChat msgText=' + msgText + ' skill=' + (skill || '(none)'));
         // sessionKey='ImportImage' — 发到专用会话，避免主对话被心跳刷屏
-        mainViewModel.sendChat(msgText, 'off', [attachment], undefined, 'ImportImage');
+        mainViewModel.sendChat(msgText, 'off', [attachment], undefined, 'main');
         // sendChat 内部若检测到 isConnected==false，会设置 chatError 并 return
         const sendFailed = (mainViewModel.chatError !== null && mainViewModel.chatError !== prevError);
         if (sendFailed) {

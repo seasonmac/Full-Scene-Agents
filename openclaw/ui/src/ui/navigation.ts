@@ -44,9 +44,8 @@ export type Tab =
   | "aiAgents"
   | "debug"
   | "logs"
-  | "dreams";
-  | "tracing"
-  | "logs";
+  | "dreams"
+  | "tracing";
 
 const TAB_PATHS: Record<Tab, string> = {
   agents: "/agents",

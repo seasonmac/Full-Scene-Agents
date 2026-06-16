@@ -130,5 +130,9 @@ export class VoiceConversationEntry {
 
 /**
  * Gateway protocol version constant
+ * 老版本的Gateway服务请使用3，新版本的Gateway服务请改成4。新版本(如2026.6.5)的Gateway报错样式：
+ * 18:39:55 [ws] protocol mismatch conn=e2ceb847-da86-4d09-a9a5-1cbee8c5ec52 peer=192.168.3.2:35646->192.168.3.5:18789 remote=192.168.3.2 remotePort=35646 client=HarmonyOS Device ui v2026.3.2 min=3 max=3 expected=4 probeMin=4 instance=a38ad1cd-3dfc-49e9-b419-f514424233b9           
+ * 18:39:55 [ws] protocol mismatch conn=c485067b-65ff-4669-a41b-653e815a8194 peer=192.168.3.2:35647->192.168.3.5:18789 remote=192.168.3.2 remotePort=35647 client=HarmonyOS Device node v2026.3.2 min=3 max=3 expected=4 probeMin=4 instance=a38ad1cd-3dfc-49e9-b419-f514424233b9
  */
 export const GATEWAY_PROTOCOL_VERSION = 3;
+//export const GATEWAY_PROTOCOL_VERSION = 4;
