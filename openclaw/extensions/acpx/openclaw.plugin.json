@@ -1,8 +1,11 @@
 {
   "id": "acpx",
+  "activation": {
+    "onStartup": true
+  },
   "enabledByDefault": true,
   "name": "ACPX Runtime",
-  "description": "Embedded ACP runtime backend with plugin-owned session and transport management.",
+  "description": "OpenClaw ACP runtime backend with plugin-owned session and transport management.",
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",
@@ -46,6 +49,10 @@
         "type": "number",
         "minimum": 0
       },
+      "probeAgent": {
+        "type": "string",
+        "minLength": 1
+      },
       "mcpServers": {
         "type": "object",
         "additionalProperties": {
@@ -78,6 +85,10 @@
             "command": {
               "type": "string",
               "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": { "type": "string" }
             }
           },
           "required": ["command"]
@@ -93,11 +104,6 @@
     "stateDir": {
       "label": "State Directory",
       "help": "Directory used for embedded ACP session state and persistence."
-    },
-    "probeAgent": {
-      "label": "Health Probe Agent",
-      "help": "Agent id used for the embedded ACP runtime health probe. Defaults to Codex when unset.",
-      "advanced": true
     },
     "permissionMode": {
       "label": "Permission Mode",
@@ -123,13 +129,18 @@
       "advanced": true
     },
     "timeoutSeconds": {
-      "label": "Prompt Timeout Seconds",
-      "help": "Timeout for each embedded runtime turn. Defaults to 120 seconds so slower Gemini CLI ACP startups have room to initialize.",
+      "label": "Runtime Operation Timeout Seconds",
+      "help": "Timeout for embedded ACP runtime startup and control operations. ACP turns use OpenClaw agent/run timeouts.",
       "advanced": true
     },
     "queueOwnerTtlSeconds": {
       "label": "Queue Owner TTL Seconds",
       "help": "Reserved compatibility field for the older embedded ACPX queue-owner path. Accepted for compatibility and logged as ignored.",
+      "advanced": true
+    },
+    "probeAgent": {
+      "label": "Health Probe Agent",
+      "help": "Agent id used for the embedded ACP runtime health probe. Defaults to the first `acp.allowedAgents` entry when that allowlist is set, otherwise to the runtime built-in probe agent (codex). Set this explicitly (for example `opencode` or `claude`) when the default probe agent is not installed or not authenticated, so the whole embedded ACP backend does not get marked unavailable.",
       "advanced": true
     },
     "mcpServers": {

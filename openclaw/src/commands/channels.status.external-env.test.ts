@@ -1,3 +1,4 @@
+// Channels status external-env tests cover env-backed credentials and config-only status rendering.
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,7 @@ import {
 } from "../plugins/loader.test-fixtures.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { channelsStatusCommand } from "./channels/status.js";
+import { createCapturingTestRuntime } from "./test-runtime-config-helpers.js";
 
 const mocks = vi.hoisted(() => ({
   callGateway: vi.fn(),
@@ -89,17 +91,6 @@ function writeExternalEnvChannelPlugin() {
   return { pluginDir, fullMarker };
 }
 
-function createRuntimeCapture() {
-  const logs: string[] = [];
-  const errors: string[] = [];
-  const runtime = {
-    log: (message: unknown) => logs.push(String(message)),
-    error: (message: unknown) => errors.push(String(message)),
-    exit: (_code?: number) => undefined,
-  };
-  return { runtime, logs, errors };
-}
-
 describe("channelsStatusCommand external env-only channel fallback", () => {
   beforeEach(() => {
     mocks.callGateway.mockReset();
@@ -127,7 +118,7 @@ describe("channelsStatusCommand external env-only channel fallback", () => {
       effectiveConfig: config,
       diagnostics: [],
     });
-    const { runtime, logs } = createRuntimeCapture();
+    const { runtime, logs } = createCapturingTestRuntime();
 
     await withEnvAsync({ EXTERNAL_ENV_CHANNEL_TOKEN: "token" }, async () => {
       await channelsStatusCommand({ json: true, probe: false }, runtime as never);
@@ -135,13 +126,9 @@ describe("channelsStatusCommand external env-only channel fallback", () => {
 
     expect(fs.existsSync(fullMarker)).toBe(false);
     const payload = JSON.parse(logs.at(-1) ?? "{}");
-    expect(payload).toEqual(
-      expect.objectContaining({
-        gatewayReachable: false,
-        configOnly: true,
-        configuredChannels: ["external-env-channel"],
-      }),
-    );
+    expect(payload.gatewayReachable).toBe(false);
+    expect(payload.configOnly).toBe(true);
+    expect(payload.configuredChannels).toEqual(["external-env-channel"]);
   });
 });
 

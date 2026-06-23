@@ -1,5 +1,9 @@
 {
   "id": "copilot-proxy",
+  "icon": "https://cdn.simpleicons.org/githubcopilot/111111",
+  "activation": {
+    "onStartup": false
+  },
   "enabledByDefault": true,
   "providers": ["copilot-proxy"],
   "autoEnableWhenConfiguredProviders": ["copilot-proxy"],

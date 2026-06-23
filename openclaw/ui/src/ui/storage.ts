@@ -1,6 +1,8 @@
+// Control UI module implements storage behavior.
 const SETTINGS_KEY_PREFIX = "openclaw.control.settings.v1:";
 const LEGACY_SETTINGS_KEY = "openclaw.control.settings.v1";
 const LOCAL_USER_IDENTITY_KEY = "openclaw.control.user.v1";
+const LOCAL_ASSISTANT_IDENTITY_KEY = "openclaw.control.assistant.v1";
 const LEGACY_TOKEN_SESSION_KEY = "openclaw.control.token.v1";
 const TOKEN_SESSION_KEY_PREFIX = "openclaw.control.token.v1:";
 const MAX_SCOPED_SESSION_ENTRIES = 10;
@@ -23,6 +25,7 @@ type PersistedUiSettings = Omit<UiSettings, "token" | "sessionKey" | "lastActive
 
 import { isSupportedLocale } from "../i18n/index.ts";
 import { getSafeLocalStorage, getSafeSessionStorage } from "../local-storage.ts";
+import { parseImportedCustomTheme, type ImportedCustomTheme } from "./custom-theme.ts";
 import { inferBasePathFromPathname, normalizeBasePath } from "./navigation.ts";
 import { normalizeOptionalString } from "./string-coerce.ts";
 import { parseThemeSelection, type ThemeMode, type ThemeName } from "./theme.ts";
@@ -35,10 +38,38 @@ import {
 export const BORDER_RADIUS_STOPS = [0, 25, 50, 75, 100] as const;
 export type BorderRadiusStop = (typeof BORDER_RADIUS_STOPS)[number];
 
+export const TEXT_SCALE_STOPS = [90, 100, 110, 125, 140] as const;
+export type TextScaleStop = (typeof TEXT_SCALE_STOPS)[number];
+
+export const CHAT_AUTO_SCROLL_MODES = ["always", "near-bottom", "off"] as const;
+export type ChatAutoScrollMode = (typeof CHAT_AUTO_SCROLL_MODES)[number];
+
+export function normalizeChatAutoScrollMode(value: unknown): ChatAutoScrollMode {
+  return CHAT_AUTO_SCROLL_MODES.includes(value as ChatAutoScrollMode)
+    ? (value as ChatAutoScrollMode)
+    : "near-bottom";
+}
+
 function snapBorderRadius(value: number): BorderRadiusStop {
   let best: BorderRadiusStop = BORDER_RADIUS_STOPS[0];
   let bestDist = Math.abs(value - best);
   for (const stop of BORDER_RADIUS_STOPS) {
+    const dist = Math.abs(value - stop);
+    if (dist < bestDist) {
+      best = stop;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+export function normalizeTextScale(value: unknown, fallback: TextScaleStop = 100): TextScaleStop {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  let best: TextScaleStop = TEXT_SCALE_STOPS[0];
+  let bestDist = Math.abs(value - best);
+  for (const stop of TEXT_SCALE_STOPS) {
     const dist = Math.abs(value - stop);
     if (dist < bestDist) {
       best = stop;
@@ -55,14 +86,17 @@ export type UiSettings = {
   lastActiveSessionKey: string;
   theme: ThemeName;
   themeMode: ThemeMode;
-  chatFocusMode: boolean;
   chatShowThinking: boolean;
   chatShowToolCalls: boolean;
+  chatAutoScroll?: ChatAutoScrollMode;
   splitRatio: number; // Sidebar split ratio (0.4 to 0.7, default 0.6)
   navCollapsed: boolean; // Collapsible sidebar state
   navWidth: number; // Sidebar width when expanded (240–400px)
   navGroupsCollapsed: Record<string, boolean>; // Which nav groups are collapsed
+  recentSessionsCollapsed?: boolean; // Collapse recent sessions list in sidebar
   borderRadius: number; // Corner roundness (0–100, default 50)
+  textScale?: TextScaleStop; // Browser-local text scale percentage
+  customTheme?: ImportedCustomTheme;
   locale?: string;
 };
 
@@ -84,7 +118,7 @@ function deriveDefaultGatewayUrl(): { pageUrl: string; effectiveUrl: string } {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const configured =
     typeof window !== "undefined" &&
-    normalizeOptionalString(window.__OPENCLAW_CONTROL_UI_BASE_PATH__);
+    normalizeOptionalString(window["__OPENCLAW_CONTROL_UI_BASE_PATH__"]);
   const basePath = configured
     ? normalizeBasePath(configured)
     : inferBasePathFromPathname(location.pathname);
@@ -165,6 +199,21 @@ function loadSessionToken(gatewayUrl: string): string {
   }
 }
 
+export function resolveGatewayTokenForUrlEdit(
+  currentGatewayUrl: string,
+  nextGatewayUrl: string,
+  currentToken: string,
+): string {
+  if (
+    normalizeGatewayTokenScope(currentGatewayUrl) === normalizeGatewayTokenScope(nextGatewayUrl)
+  ) {
+    return currentToken;
+  }
+  // Gateway tokens stay session-scoped across endpoint edits.
+  // Durable settings may contain scrubbed legacy tokens, but must not restore them here.
+  return loadSessionToken(nextGatewayUrl);
+}
+
 function persistSessionToken(gatewayUrl: string, token: string) {
   try {
     const storage = getSessionStorage();
@@ -195,14 +244,16 @@ export function loadSettings(): UiSettings {
     lastActiveSessionKey: "main",
     theme: "claw",
     themeMode: "system",
-    chatFocusMode: false,
     chatShowThinking: true,
     chatShowToolCalls: true,
+    chatAutoScroll: "near-bottom",
     splitRatio: 0.6,
     navCollapsed: false,
     navWidth: 220,
     navGroupsCollapsed: {},
+    recentSessionsCollapsed: false,
     borderRadius: 50,
+    textScale: 100,
   };
 
   try {
@@ -219,6 +270,7 @@ export function loadSettings(): UiSettings {
     const parsedGatewayUrl = normalizeOptionalString(parsed.gatewayUrl) ?? defaults.gatewayUrl;
     const gatewayUrl = parsedGatewayUrl === pageDerivedUrl ? defaultUrl : parsedGatewayUrl;
     const scopedSessionSelection = resolveScopedSessionSelection(gatewayUrl, parsed, defaults);
+    const customTheme = parseImportedCustomTheme((parsed as { customTheme?: unknown }).customTheme);
     const { theme, mode } = parseThemeSelection(
       (parsed as { theme?: unknown }).theme,
       (parsed as { themeMode?: unknown }).themeMode,
@@ -229,10 +281,8 @@ export function loadSettings(): UiSettings {
       token: loadSessionToken(gatewayUrl),
       sessionKey: scopedSessionSelection.sessionKey,
       lastActiveSessionKey: scopedSessionSelection.lastActiveSessionKey,
-      theme,
+      theme: theme === "custom" && !customTheme ? "claw" : theme,
       themeMode: mode,
-      chatFocusMode:
-        typeof parsed.chatFocusMode === "boolean" ? parsed.chatFocusMode : defaults.chatFocusMode,
       chatShowThinking:
         typeof parsed.chatShowThinking === "boolean"
           ? parsed.chatShowThinking
@@ -241,6 +291,7 @@ export function loadSettings(): UiSettings {
         typeof parsed.chatShowToolCalls === "boolean"
           ? parsed.chatShowToolCalls
           : defaults.chatShowToolCalls,
+      chatAutoScroll: normalizeChatAutoScrollMode(parsed.chatAutoScroll),
       splitRatio:
         typeof parsed.splitRatio === "number" &&
         parsed.splitRatio >= 0.4 &&
@@ -257,12 +308,18 @@ export function loadSettings(): UiSettings {
         typeof parsed.navGroupsCollapsed === "object" && parsed.navGroupsCollapsed !== null
           ? parsed.navGroupsCollapsed
           : defaults.navGroupsCollapsed,
+      recentSessionsCollapsed:
+        typeof parsed.recentSessionsCollapsed === "boolean"
+          ? parsed.recentSessionsCollapsed
+          : defaults.recentSessionsCollapsed,
       borderRadius:
         typeof parsed.borderRadius === "number" &&
         parsed.borderRadius >= 0 &&
         parsed.borderRadius <= 100
           ? snapBorderRadius(parsed.borderRadius)
           : defaults.borderRadius,
+      textScale: normalizeTextScale(parsed.textScale, defaults.textScale),
+      customTheme: customTheme ?? undefined,
       locale: isSupportedLocale(parsed.locale) ? parsed.locale : undefined,
     };
     if ("token" in parsed) {
@@ -306,6 +363,94 @@ export function saveLocalUserIdentity(next: LocalUserIdentity) {
   }
 }
 
+export type LocalAssistantIdentity = { avatar: string | null; agentId?: string | null };
+
+type PersistedLocalAssistantIdentities = {
+  avatars?: Record<string, unknown>;
+  avatar?: unknown;
+  agentId?: unknown;
+};
+
+function parseLocalAssistantAvatarMap(raw: string): {
+  avatars: Record<string, string>;
+  legacyAvatar: string | null;
+} {
+  const parsed = JSON.parse(raw) as PersistedLocalAssistantIdentities;
+  const avatars = Object.create(null) as Record<string, string>;
+  if (parsed.avatars && typeof parsed.avatars === "object" && !Array.isArray(parsed.avatars)) {
+    for (const [agentId, avatar] of Object.entries(parsed.avatars)) {
+      const normalizedAgentId = normalizeOptionalString(agentId);
+      const normalizedAvatar = normalizeOptionalString(avatar);
+      if (normalizedAgentId && normalizedAvatar) {
+        avatars[normalizedAgentId] = normalizedAvatar;
+      }
+    }
+  }
+  const legacyAvatar = normalizeOptionalString(parsed.avatar);
+  const legacyAgentId = normalizeOptionalString(parsed.agentId);
+  if (legacyAvatar && legacyAgentId && !Object.hasOwn(avatars, legacyAgentId)) {
+    avatars[legacyAgentId] = legacyAvatar;
+  }
+  return { avatars, legacyAvatar: legacyAgentId ? null : (legacyAvatar ?? null) };
+}
+
+function persistLocalAssistantAvatarMap(storage: Storage | null, avatars: Record<string, string>) {
+  if (Object.keys(avatars).length === 0) {
+    storage?.removeItem(LOCAL_ASSISTANT_IDENTITY_KEY);
+    return;
+  }
+  storage?.setItem(LOCAL_ASSISTANT_IDENTITY_KEY, JSON.stringify({ avatars }));
+}
+
+export function loadLocalAssistantIdentity(opts?: {
+  agentId?: string | null;
+}): LocalAssistantIdentity {
+  const agentId = normalizeOptionalString(opts?.agentId);
+  if (!agentId) {
+    return { avatar: null };
+  }
+  const storage = getSafeLocalStorage();
+  try {
+    const raw = storage?.getItem(LOCAL_ASSISTANT_IDENTITY_KEY);
+    if (!raw) {
+      return { avatar: null };
+    }
+    const { avatars, legacyAvatar } = parseLocalAssistantAvatarMap(raw);
+    if (!Object.hasOwn(avatars, agentId) && legacyAvatar) {
+      // Assign the old global override to the first concrete agent that loads it.
+      avatars[agentId] = legacyAvatar;
+      persistLocalAssistantAvatarMap(storage, avatars);
+    }
+    return { avatar: Object.hasOwn(avatars, agentId) ? avatars[agentId] : null, agentId };
+  } catch {
+    return { avatar: null };
+  }
+}
+
+export function saveLocalAssistantIdentity(next: LocalAssistantIdentity) {
+  const agentId = normalizeOptionalString(next.agentId);
+  if (!agentId) {
+    return;
+  }
+  const storage = getSafeLocalStorage();
+  try {
+    const raw = storage?.getItem(LOCAL_ASSISTANT_IDENTITY_KEY);
+    const avatars = raw
+      ? parseLocalAssistantAvatarMap(raw).avatars
+      : (Object.create(null) as Record<string, string>);
+    const avatar = normalizeOptionalString(next.avatar);
+    if (avatar) {
+      avatars[agentId] = avatar;
+    } else {
+      delete avatars[agentId];
+    }
+    persistLocalAssistantAvatarMap(storage, avatars);
+  } catch {
+    // best-effort — quota exceeded or security restrictions should not
+    // prevent in-memory identity updates from being applied
+  }
+}
+
 function persistSettings(next: UiSettings) {
   persistSessionToken(next.gatewayUrl, next.token);
   const storage = getSafeLocalStorage();
@@ -343,14 +488,17 @@ function persistSettings(next: UiSettings) {
     gatewayUrl: next.gatewayUrl,
     theme: next.theme,
     themeMode: next.themeMode,
-    chatFocusMode: next.chatFocusMode,
     chatShowThinking: next.chatShowThinking,
     chatShowToolCalls: next.chatShowToolCalls,
+    chatAutoScroll: normalizeChatAutoScrollMode(next.chatAutoScroll),
     splitRatio: next.splitRatio,
     navCollapsed: next.navCollapsed,
     navWidth: next.navWidth,
     navGroupsCollapsed: next.navGroupsCollapsed,
+    recentSessionsCollapsed: next.recentSessionsCollapsed ?? false,
     borderRadius: next.borderRadius,
+    textScale: normalizeTextScale(next.textScale),
+    ...(next.customTheme ? { customTheme: next.customTheme } : {}),
     sessionsByGateway,
     ...(next.locale ? { locale: next.locale } : {}),
   };

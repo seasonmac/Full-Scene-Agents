@@ -1,9 +1,19 @@
 {
   "id": "qqbot",
+  "name": "QQ Bot",
+  "description": "OpenClaw QQ Bot channel plugin for group and direct-message workflows.",
+  "icon": "https://cdn.simpleicons.org/qq/111111",
+  "activation": {
+    "onStartup": false
+  },
   "channels": ["qqbot"],
+  "contracts": {
+    "tools": ["qqbot_channel_api", "qqbot_remind"]
+  },
   "channelEnvVars": {
     "qqbot": ["QQBOT_APP_ID", "QQBOT_CLIENT_SECRET"]
   },
+  "enabledByDefault": true,
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",
@@ -51,6 +61,27 @@
       "secretInput": {
         "anyOf": [{ "type": "string", "minLength": 1 }, { "$ref": "#/$defs/secretRef" }]
       },
+      "group": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "requireMention": { "type": "boolean" },
+          "commandLevel": {
+            "type": "string",
+            "enum": ["all", "safety", "strict"]
+          },
+          "ignoreOtherMentions": { "type": "boolean" },
+          "historyLimit": { "type": "number" },
+          "name": { "type": "string" },
+          "prompt": { "type": "string" }
+        }
+      },
+      "groups": {
+        "type": "object",
+        "additionalProperties": {
+          "$ref": "#/$defs/group"
+        }
+      },
       "account": {
         "type": "object",
         "additionalProperties": true,
@@ -90,11 +121,16 @@
                     "type": "string",
                     "enum": ["off", "partial"],
                     "default": "partial"
+                  },
+                  "c2cStreamApi": {
+                    "type": "boolean",
+                    "description": "Use QQ C2C official stream_messages API (single-message typing-style updates)."
                   }
                 }
               }
             ]
-          }
+          },
+          "groups": { "$ref": "#/$defs/groups" }
         }
       }
     },
@@ -135,6 +171,10 @@
                 "type": "string",
                 "enum": ["off", "partial"],
                 "default": "partial"
+              },
+              "c2cStreamApi": {
+                "type": "boolean",
+                "description": "Use QQ C2C official stream_messages API (single-message typing-style updates)."
               }
             }
           }
@@ -146,7 +186,8 @@
           "$ref": "#/$defs/account"
         }
       },
-      "defaultAccount": { "type": "string" }
+      "defaultAccount": { "type": "string" },
+      "groups": { "$ref": "#/$defs/groups" }
     }
   }
 }

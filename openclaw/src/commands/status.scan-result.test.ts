@@ -1,3 +1,4 @@
+// Status scan result tests cover cold-start summaries and gateway probe snapshot aggregation.
 import { describe, expect, it } from "vitest";
 import { buildStatusScanResult } from "./status.scan-result.ts";
 import { buildColdStartStatusSummary } from "./status.scan.bootstrap-shared.ts";
@@ -87,6 +88,7 @@ describe("buildStatusScanResult", () => {
       {
         pluginId: "legacy",
         code: "legacy-before-agent-start" as const,
+        compatCode: "legacy-before-agent-start" as const,
         severity: "warn" as const,
         message: "warn",
       },

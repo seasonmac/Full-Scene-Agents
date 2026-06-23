@@ -1,11 +1,12 @@
+// Hook loader tests cover loading bundled, workspace, and plugin hooks.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { stripAnsi } from "../../packages/terminal-core/src/ansi.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { setLoggerOverride } from "../logging/logger.js";
 import { loggingState } from "../logging/state.js";
-import { stripAnsi } from "../terminal/ansi.js";
 import { captureEnv } from "../test-utils/env.js";
 import { hasConfiguredInternalHooks, resolveConfiguredInternalHookNames } from "./configured.js";
 import {
@@ -243,28 +244,6 @@ describe("loader", () => {
       expect(event.messages).toEqual(["keep-hook"]);
     });
 
-    it("should load a handler from a module", async () => {
-      // Create a test handler module
-      const handlerCode = `
-        export default async function(event) {
-          // Test handler
-        }
-      `;
-      const handlerPath = await writeHandlerModule("test-handler.js", handlerCode);
-      const cfg = createEnabledHooksConfig([
-        {
-          event: "command:new",
-          module: path.basename(handlerPath),
-        },
-      ]);
-
-      const count = await loadInternalHooks(cfg, tmpDir);
-      expect(count).toBe(1);
-
-      const keys = getRegisteredEventKeys();
-      expect(keys).toContain("command:new");
-    });
-
     it("should load multiple handlers", async () => {
       // Create test handler modules
       const handler1Path = await writeHandlerModule("handler1.js");
@@ -281,6 +260,28 @@ describe("loader", () => {
       const keys = getRegisteredEventKeys();
       expect(keys).toContain("command:new");
       expect(keys).toContain("command:stop");
+    });
+
+    it("loads legacy handler modules from dot-prefixed workspace paths", async () => {
+      await fs.mkdir(path.join(tmpDir, "..hooks"), { recursive: true });
+      await writeHandlerModule(
+        path.join("..hooks", "legacy-handler.js"),
+        'export default async function(event) { event.messages.push("dot-prefixed-hook"); }\n',
+      );
+
+      const cfg = createEnabledHooksConfig([
+        {
+          event: "command:new",
+          module: path.join("..hooks", "legacy-handler.js"),
+        },
+      ]);
+
+      const count = await loadInternalHooks(cfg, tmpDir);
+      expect(count).toBe(1);
+
+      const event = createInternalHookEvent("command", "new", "test-session");
+      await triggerInternalHook(event);
+      expect(event.messages).toEqual(["dot-prefixed-hook"]);
     });
 
     it("preserves plugin-registered hooks when workspace hooks reload", async () => {
@@ -314,7 +315,12 @@ describe("loader", () => {
 
       const event = createInternalHookEvent("command", "new", "test-session");
       await triggerInternalHook(event);
-      expect(event.messages.filter((message) => message === "reloadable-hook")).toHaveLength(1);
+      expect(
+        event.messages.reduce(
+          (count, message) => count + (message === "reloadable-hook" ? 1 : 0),
+          0,
+        ),
+      ).toBe(1);
     });
 
     it("should support named exports", async () => {
@@ -361,56 +367,6 @@ describe("loader", () => {
         const count = await loadInternalHooks(cfg, tmpDir);
         expect(count).toBe(0);
       }
-    });
-
-    it("should handle relative paths", async () => {
-      // Create a handler module
-      const handlerPath = await writeHandlerModule("relative-handler.js");
-
-      // Relative to workspaceDir (tmpDir)
-      const relativePath = path.relative(tmpDir, handlerPath);
-
-      const cfg = createEnabledHooksConfig([
-        {
-          event: "command:new",
-          module: relativePath,
-        },
-      ]);
-
-      const count = await loadInternalHooks(cfg, tmpDir);
-      expect(count).toBe(1);
-    });
-
-    it("should actually call the loaded handler", async () => {
-      // Create a handler that we can verify was called
-      const handlerCode = `
-        let callCount = 0;
-        export default async function(event) {
-          callCount++;
-        }
-        export function getCallCount() {
-          return callCount;
-        }
-      `;
-      const handlerPath = await writeHandlerModule("callable-handler.js", handlerCode);
-
-      const cfg = createEnabledHooksConfig([
-        {
-          event: "command:new",
-          module: path.basename(handlerPath),
-        },
-      ]);
-
-      await loadInternalHooks(cfg, tmpDir);
-
-      // Trigger the hook
-      const event = createInternalHookEvent("command", "new", "test-session");
-      await triggerInternalHook(event);
-
-      // The handler should have been called, but we can't directly verify
-      // the call count from this context without more complex test infrastructure
-      // This test mainly verifies that loading and triggering doesn't crash
-      expect(getRegisteredEventKeys()).toContain("command:new");
     });
 
     it("keeps workspace hooks disabled by default until explicitly enabled", async () => {

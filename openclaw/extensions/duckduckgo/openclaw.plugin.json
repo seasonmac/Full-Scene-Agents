@@ -1,5 +1,9 @@
 {
   "id": "duckduckgo",
+  "icon": "https://cdn.simpleicons.org/duckduckgo/111111",
+  "activation": {
+    "onStartup": false
+  },
   "uiHints": {
     "webSearch.region": {
       "label": "DuckDuckGo Region",

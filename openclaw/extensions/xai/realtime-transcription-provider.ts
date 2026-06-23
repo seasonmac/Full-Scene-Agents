@@ -1,19 +1,25 @@
-import { randomUUID } from "node:crypto";
+// Xai provider module implements model/runtime integration.
 import {
-  captureWsEvent,
-  createDebugProxyWebSocketAgent,
-  resolveDebugProxySettings,
-} from "openclaw/plugin-sdk/proxy-capture";
-import type {
-  RealtimeTranscriptionProviderConfig,
-  RealtimeTranscriptionProviderPlugin,
-  RealtimeTranscriptionSession,
-  RealtimeTranscriptionSessionCreateRequest,
+  isProviderAuthProfileConfigured,
+  type OpenClawConfig,
+} from "openclaw/plugin-sdk/provider-auth";
+import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
+import {
+  createRealtimeTranscriptionWebSocketSession,
+  type RealtimeTranscriptionProviderConfig,
+  type RealtimeTranscriptionProviderPlugin,
+  type RealtimeTranscriptionSession,
+  type RealtimeTranscriptionSessionCreateRequest,
+  type RealtimeTranscriptionWebSocketTransport,
 } from "openclaw/plugin-sdk/realtime-transcription";
 import { normalizeResolvedSecretInputString } from "openclaw/plugin-sdk/secret-input";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
-import WebSocket from "ws";
+import {
+  normalizeOptionalString,
+  parseBooleanValue as readBoolean,
+  parseFiniteNumber as readFiniteNumber,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import { XAI_BASE_URL } from "./model-definitions.js";
+import { xaiUserAgentHeaderFor } from "./src/xai-user-agent.js";
 
 type XaiRealtimeTranscriptionEncoding = "pcm" | "mulaw" | "alaw";
 
@@ -29,6 +35,8 @@ type XaiRealtimeTranscriptionProviderConfig = {
 
 type XaiRealtimeTranscriptionSessionConfig = RealtimeTranscriptionSessionCreateRequest & {
   apiKey: string;
+  // Late-bound bearer; called per (re)connect.
+  resolveApiKey?: () => Promise<string>;
   baseUrl: string;
   sampleRate: number;
   encoding: XaiRealtimeTranscriptionEncoding;
@@ -64,33 +72,6 @@ function readNestedXaiConfig(rawConfig: RealtimeTranscriptionProviderConfig) {
   const raw = readRecord(rawConfig);
   const providers = readRecord(raw?.providers);
   return readRecord(providers?.xai ?? raw?.xai ?? raw) ?? {};
-}
-
-function readFiniteNumber(value: unknown): number | undefined {
-  const next =
-    typeof value === "number"
-      ? value
-      : typeof value === "string"
-        ? Number.parseFloat(value)
-        : undefined;
-  return Number.isFinite(next) ? next : undefined;
-}
-
-function readBoolean(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) {
-    return true;
-  }
-  if (["0", "false", "no", "off"].includes(normalized)) {
-    return false;
-  }
-  return undefined;
 }
 
 function normalizeEncoding(value: unknown): XaiRealtimeTranscriptionEncoding | undefined {
@@ -160,307 +141,92 @@ function readTranscriptText(event: XaiRealtimeTranscriptionEvent): string | unde
   return normalizeOptionalString(event.text ?? event.transcript);
 }
 
-class XaiRealtimeTranscriptionSession implements RealtimeTranscriptionSession {
-  private ws: WebSocket | null = null;
-  private connected = false;
-  private ready = false;
-  private closed = false;
-  private reconnectAttempts = 0;
-  private queuedAudio: Buffer[] = [];
-  private queuedBytes = 0;
-  private closeTimer: ReturnType<typeof setTimeout> | undefined;
-  private lastTranscript: string | undefined;
-  private speechStarted = false;
-  private reconnecting = false;
-  private readonly flowId = randomUUID();
+function createXaiRealtimeTranscriptionSession(
+  config: XaiRealtimeTranscriptionSessionConfig,
+): RealtimeTranscriptionSession {
+  let lastTranscript: string | undefined;
+  let speechStarted = false;
 
-  constructor(private readonly config: XaiRealtimeTranscriptionSessionConfig) {}
-
-  async connect(): Promise<void> {
-    this.closed = false;
-    this.reconnectAttempts = 0;
-    await this.doConnect();
-  }
-
-  sendAudio(audio: Buffer): void {
-    if (this.closed) {
+  const emitTranscript = (text: string) => {
+    if (text === lastTranscript) {
       return;
     }
-    if (this.ws?.readyState === WebSocket.OPEN && this.ready) {
-      this.sendAudioFrame(audio);
+    lastTranscript = text;
+    config.onTranscript?.(text);
+  };
+
+  const handleEvent = (
+    event: XaiRealtimeTranscriptionEvent,
+    transport: RealtimeTranscriptionWebSocketTransport,
+  ) => {
+    if (event.type === "transcript.created") {
+      transport.markReady();
       return;
     }
-    this.queueAudio(audio);
-  }
-
-  close(): void {
-    this.closed = true;
-    this.connected = false;
-    this.queuedAudio = [];
-    this.queuedBytes = 0;
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.forceClose();
+    if (!transport.isReady() && event.type === "error") {
+      transport.failConnect(new Error(readErrorDetail(event.error ?? event.message)));
       return;
     }
-    this.sendEvent({ type: "audio.done" });
-    this.closeTimer = setTimeout(() => this.forceClose(), XAI_REALTIME_STT_CLOSE_TIMEOUT_MS);
-  }
-
-  isConnected(): boolean {
-    return this.connected;
-  }
-
-  private async doConnect(): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      const url = toXaiRealtimeWsUrl(this.config);
-      const debugProxy = resolveDebugProxySettings();
-      const proxyAgent = createDebugProxyWebSocketAgent(debugProxy);
-      let settled = false;
-      let opened = false;
-      const finishConnect = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(connectTimeout);
-        this.ready = true;
-        this.flushQueuedAudio();
-        resolve();
-      };
-      const failConnect = (error: Error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(connectTimeout);
-        this.config.onError?.(error);
-        this.closed = true;
-        this.forceClose();
-        reject(error);
-      };
-      this.ready = false;
-      this.ws = new WebSocket(url, {
-        headers: {
-          Authorization: `Bearer ${this.config.apiKey}`,
-        },
-        ...(proxyAgent ? { agent: proxyAgent } : {}),
-      });
-
-      const connectTimeout = setTimeout(() => {
-        failConnect(new Error("xAI realtime transcription connection timeout"));
-      }, XAI_REALTIME_STT_CONNECT_TIMEOUT_MS);
-
-      this.ws.on("open", () => {
-        opened = true;
-        this.connected = true;
-        this.reconnectAttempts = 0;
-        captureWsEvent({
-          url,
-          direction: "local",
-          kind: "ws-open",
-          flowId: this.flowId,
-          meta: { provider: "xai", capability: "realtime-transcription" },
-        });
-      });
-
-      this.ws.on("message", (data: Buffer) => {
-        captureWsEvent({
-          url,
-          direction: "inbound",
-          kind: "ws-frame",
-          flowId: this.flowId,
-          payload: data,
-          meta: { provider: "xai", capability: "realtime-transcription" },
-        });
-        try {
-          const event = JSON.parse(data.toString()) as XaiRealtimeTranscriptionEvent;
-          if (event.type === "transcript.created") {
-            finishConnect();
-            return;
-          }
-          if (!this.ready && event.type === "error") {
-            failConnect(new Error(readErrorDetail(event.error ?? event.message)));
-            return;
-          }
-          this.handleEvent(event);
-        } catch (error) {
-          this.config.onError?.(error instanceof Error ? error : new Error(String(error)));
-        }
-      });
-
-      this.ws.on("error", (error) => {
-        captureWsEvent({
-          url,
-          direction: "local",
-          kind: "error",
-          flowId: this.flowId,
-          errorText: error instanceof Error ? error.message : String(error),
-          meta: { provider: "xai", capability: "realtime-transcription" },
-        });
-        if (!this.ready) {
-          failConnect(error instanceof Error ? error : new Error(String(error)));
-          return;
-        }
-        this.config.onError?.(error instanceof Error ? error : new Error(String(error)));
-      });
-
-      this.ws.on("close", () => {
-        clearTimeout(connectTimeout);
-        this.connected = false;
-        this.ready = false;
-        if (this.closeTimer) {
-          clearTimeout(this.closeTimer);
-          this.closeTimer = undefined;
-        }
-        if (this.closed) {
-          return;
-        }
-        if (!opened || !settled) {
-          return;
-        }
-        void this.attemptReconnect();
-      });
-    });
-  }
-
-  private async attemptReconnect(): Promise<void> {
-    if (this.closed) {
-      return;
-    }
-    if (this.reconnecting) {
-      return;
-    }
-    if (this.reconnectAttempts >= XAI_REALTIME_STT_MAX_RECONNECT_ATTEMPTS) {
-      this.config.onError?.(new Error("xAI realtime transcription reconnect limit reached"));
-      return;
-    }
-    this.reconnectAttempts += 1;
-    const delay = XAI_REALTIME_STT_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempts - 1);
-    this.reconnecting = true;
-    try {
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      if (this.closed) {
-        return;
-      }
-      await this.doConnect();
-    } catch {
-      if (!this.closed) {
-        this.reconnecting = false;
-        await this.attemptReconnect();
-        return;
-      }
-    } finally {
-      this.reconnecting = false;
-    }
-  }
-
-  private handleEvent(event: XaiRealtimeTranscriptionEvent): void {
     switch (event.type) {
       case "transcript.partial": {
         const text = readTranscriptText(event);
         if (!text) {
           return;
         }
-        if (!this.speechStarted) {
-          this.speechStarted = true;
-          this.config.onSpeechStart?.();
+        if (!speechStarted) {
+          speechStarted = true;
+          config.onSpeechStart?.();
         }
         if (event.is_final && event.speech_final) {
-          this.emitTranscript(text);
-          this.speechStarted = false;
+          emitTranscript(text);
+          speechStarted = false;
           return;
         }
-        this.config.onPartial?.(text);
+        config.onPartial?.(text);
         return;
       }
       case "transcript.done": {
         const text = readTranscriptText(event);
         if (text) {
-          this.emitTranscript(text);
+          emitTranscript(text);
         }
-        this.forceClose();
+        transport.closeNow();
         return;
       }
       case "error":
-        this.config.onError?.(new Error(readErrorDetail(event.error ?? event.message)));
-        return;
+        config.onError?.(new Error(readErrorDetail(event.error ?? event.message)));
+
       default:
-        return;
     }
-  }
+  };
 
-  private emitTranscript(text: string): void {
-    if (text === this.lastTranscript) {
-      return;
-    }
-    this.lastTranscript = text;
-    this.config.onTranscript?.(text);
-  }
-
-  private queueAudio(audio: Buffer): void {
-    if (audio.byteLength === 0) {
-      return;
-    }
-    this.queuedAudio.push(Buffer.from(audio));
-    this.queuedBytes += audio.byteLength;
-    while (this.queuedBytes > XAI_REALTIME_STT_MAX_QUEUED_BYTES && this.queuedAudio.length > 0) {
-      const dropped = this.queuedAudio.shift();
-      this.queuedBytes -= dropped?.byteLength ?? 0;
-    }
-  }
-
-  private flushQueuedAudio(): void {
-    for (const audio of this.queuedAudio) {
-      this.sendAudioFrame(audio);
-    }
-    this.queuedAudio = [];
-    this.queuedBytes = 0;
-  }
-
-  private sendAudioFrame(audio: Buffer): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) {
-      this.queueAudio(audio);
-      return;
-    }
-    captureWsEvent({
-      url: toXaiRealtimeWsUrl(this.config),
-      direction: "outbound",
-      kind: "ws-frame",
-      flowId: this.flowId,
-      payload: audio,
-      meta: { provider: "xai", capability: "realtime-transcription" },
-    });
-    this.ws.send(audio);
-  }
-
-  private sendEvent(event: unknown): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    const payload = JSON.stringify(event);
-    captureWsEvent({
-      url: toXaiRealtimeWsUrl(this.config),
-      direction: "outbound",
-      kind: "ws-frame",
-      flowId: this.flowId,
-      payload,
-      meta: { provider: "xai", capability: "realtime-transcription" },
-    });
-    this.ws.send(payload);
-  }
-
-  private forceClose(): void {
-    if (this.closeTimer) {
-      clearTimeout(this.closeTimer);
-      this.closeTimer = undefined;
-    }
-    this.connected = false;
-    this.ready = false;
-    if (this.ws) {
-      this.ws.close(1000, "Transcription session closed");
-      this.ws = null;
-    }
-  }
+  return createRealtimeTranscriptionWebSocketSession<XaiRealtimeTranscriptionEvent>({
+    providerId: "xai",
+    callbacks: config,
+    url: () => toXaiRealtimeWsUrl(config),
+    headers: async () => {
+      const apiKey = config.resolveApiKey ? await config.resolveApiKey() : config.apiKey;
+      return {
+        Authorization: `Bearer ${apiKey}`,
+        ...xaiUserAgentHeaderFor(config.baseUrl),
+      };
+    },
+    connectTimeoutMs: XAI_REALTIME_STT_CONNECT_TIMEOUT_MS,
+    closeTimeoutMs: XAI_REALTIME_STT_CLOSE_TIMEOUT_MS,
+    maxReconnectAttempts: XAI_REALTIME_STT_MAX_RECONNECT_ATTEMPTS,
+    reconnectDelayMs: XAI_REALTIME_STT_RECONNECT_DELAY_MS,
+    maxQueuedBytes: XAI_REALTIME_STT_MAX_QUEUED_BYTES,
+    connectTimeoutMessage: "xAI realtime transcription connection timeout",
+    connectClosedBeforeReadyMessage: "xAI realtime transcription connection closed before ready",
+    reconnectLimitMessage: "xAI realtime transcription reconnect limit reached",
+    sendAudio: (audio, transport) => {
+      transport.sendBinary(audio);
+    },
+    onClose: (transport) => {
+      transport.sendJson({ type: "audio.done" });
+    },
+    onMessage: handleEvent,
+  });
 }
 
 export function buildXaiRealtimeTranscriptionProvider(): RealtimeTranscriptionProviderPlugin {
@@ -470,17 +236,18 @@ export function buildXaiRealtimeTranscriptionProvider(): RealtimeTranscriptionPr
     aliases: ["xai-realtime", "grok-stt-streaming"],
     autoSelectOrder: 25,
     resolveConfig: ({ rawConfig }) => normalizeProviderConfig(rawConfig),
-    isConfigured: ({ providerConfig }) =>
-      Boolean(normalizeProviderConfig(providerConfig).apiKey || process.env.XAI_API_KEY),
+    isConfigured: ({ providerConfig, cfg }) =>
+      Boolean(normalizeProviderConfig(providerConfig).apiKey || process.env.XAI_API_KEY) ||
+      isProviderAuthProfileConfigured({ provider: "xai", cfg }),
     createSession: (req) => {
       const config = normalizeProviderConfig(req.providerConfig);
-      const apiKey = config.apiKey || process.env.XAI_API_KEY;
-      if (!apiKey) {
-        throw new Error("xAI API key missing");
-      }
-      return new XaiRealtimeTranscriptionSession({
+      // createSession must stay sync per RealtimeTranscriptionProviderPlugin; bearer is resolved lazily in headers().
+      const seedApiKey =
+        normalizeOptionalString(config.apiKey) ?? normalizeOptionalString(process.env.XAI_API_KEY);
+      return createXaiRealtimeTranscriptionSession({
         ...req,
-        apiKey,
+        apiKey: seedApiKey ?? "",
+        resolveApiKey: () => resolveXaiRealtimeApiKey(config.apiKey, req.cfg),
         baseUrl: normalizeXaiRealtimeBaseUrl(config.baseUrl),
         sampleRate: config.sampleRate ?? XAI_REALTIME_STT_DEFAULT_SAMPLE_RATE,
         encoding: config.encoding ?? XAI_REALTIME_STT_DEFAULT_ENCODING,
@@ -490,4 +257,27 @@ export function buildXaiRealtimeTranscriptionProvider(): RealtimeTranscriptionPr
       });
     },
   };
+}
+
+// Resolve an xAI bearer for the realtime `/stt` WebSocket:
+// 1. Configured `plugins.entries.voice-call.config.streaming.providers.xai.apiKey`
+// 2. `XAI_API_KEY` env var
+// 3. xAI OAuth auth profile (cfg-scoped)
+async function resolveXaiRealtimeApiKey(
+  configApiKey: string | undefined,
+  cfg: OpenClawConfig | undefined,
+): Promise<string> {
+  const direct =
+    normalizeOptionalString(configApiKey) ?? normalizeOptionalString(process.env.XAI_API_KEY);
+  if (direct) {
+    return direct;
+  }
+  const auth = await resolveApiKeyForProvider({ provider: "xai", cfg });
+  const oauthKey = normalizeOptionalString(auth?.apiKey);
+  if (oauthKey) {
+    return oauthKey;
+  }
+  throw new Error(
+    "xAI credentials missing for realtime STT. Sign in with `openclaw onboard --auth-choice xai-oauth`, or run `openclaw onboard --auth-choice xai-api-key`, or set XAI_API_KEY.",
+  );
 }

@@ -1,28 +1,30 @@
+// Control UI module implements app polling behavior.
 import type { DebugState } from "./controllers/debug.ts";
 import { loadDebug } from "./controllers/debug.ts";
 import type { LogsState } from "./controllers/logs.ts";
 import { loadLogs } from "./controllers/logs.ts";
 import type { NodesState } from "./controllers/nodes.ts";
 import { loadNodes } from "./controllers/nodes.ts";
-import { loadTraces } from "./controllers/tracing.ts";
 
 type PollingHost = {
   nodesPollInterval: number | null;
   logsPollInterval: number | null;
   debugPollInterval: number | null;
-  tracesPollInterval: number | null;
   tab: string;
-  tracingAutoFollow: boolean;
 };
+
+export const NODES_ACTIVE_POLL_INTERVAL_MS = 30_000;
 
 export function startNodesPolling(host: PollingHost) {
   if (host.nodesPollInterval != null) {
     return;
   }
-  host.nodesPollInterval = window.setInterval(
-    () => void loadNodes(host as unknown as NodesState, { quiet: true }),
-    5000,
-  );
+  host.nodesPollInterval = window.setInterval(() => {
+    if (host.tab !== "nodes") {
+      return;
+    }
+    void loadNodes(host as unknown as NodesState, { quiet: true });
+  }, NODES_ACTIVE_POLL_INTERVAL_MS);
 }
 
 export function stopNodesPolling(host: PollingHost) {
@@ -71,24 +73,4 @@ export function stopDebugPolling(host: PollingHost) {
   }
   clearInterval(host.debugPollInterval);
   host.debugPollInterval = null;
-}
-
-export function startTracingPolling(host: PollingHost) {
-  if (host.tracesPollInterval != null) {
-    return;
-  }
-  host.tracesPollInterval = window.setInterval(() => {
-    if (host.tab !== "tracing" || !host.tracingAutoFollow) {
-      return;
-    }
-    void loadTraces(host as unknown as OpenClawApp, { quiet: true });
-  }, 2500);
-}
-
-export function stopTracingPolling(host: PollingHost) {
-  if (host.tracesPollInterval == null) {
-    return;
-  }
-  clearInterval(host.tracesPollInterval);
-  host.tracesPollInterval = null;
 }

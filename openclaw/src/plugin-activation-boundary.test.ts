@@ -1,7 +1,24 @@
+// Tests plugin activation boundaries during root package startup.
 import { describe, expect, it, vi } from "vitest";
 import { normalizeModelRef } from "./agents/model-selection-normalize.js";
 import { isStaticallyChannelConfigured } from "./config/channel-configured-shared.js";
 import { parseBrowserMajorVersion } from "./plugin-sdk/browser-host-inspection.js";
+
+const testModelIdNormalization = {
+  providers: {
+    google: {
+      aliases: {
+        "gemini-3.1-pro": "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview": "gemini-3.1-pro-preview",
+      },
+    },
+    xai: {
+      aliases: {
+        "grok-4-fast-reasoning": "grok-4-fast",
+      },
+    },
+  },
+};
 
 const loadBundledPluginPublicSurfaceModuleSync = vi.hoisted(() =>
   vi.fn((params: { artifactBasename: string }) => {
@@ -19,17 +36,28 @@ const loadBundledPluginPublicSurfaceModuleSync = vi.hoisted(() =>
   }),
 );
 
-const loadPluginManifestRegistry = vi.hoisted(() =>
+const loadPluginManifestRegistryForPluginRegistry = vi.hoisted(() =>
   vi.fn(() => ({
     diagnostics: [],
     plugins: [
       {
+        id: "test-channel-fixture",
+        channels: ["discord", "irc", "slack", "telegram"],
+        providers: [],
+        cliBackends: [],
         channelEnvVars: {
           discord: ["DISCORD_BOT_TOKEN"],
           irc: ["IRC_HOST", "IRC_NICK"],
           slack: ["SLACK_BOT_TOKEN"],
           telegram: ["TELEGRAM_BOT_TOKEN"],
         },
+        modelIdNormalization: testModelIdNormalization,
+        skills: [],
+        hooks: [],
+        origin: "bundled",
+        rootDir: "/tmp/openclaw-test-channel-fixture",
+        source: "bundled",
+        manifestPath: "/tmp/openclaw-test-channel-fixture/openclaw.plugin.json",
       },
     ],
   })),
@@ -54,8 +82,25 @@ const facadeMockHelpers = vi.hoisted(() => {
   return { createLazyFacadeArrayValue, createLazyFacadeObjectValue };
 });
 
-vi.mock("./plugins/manifest-registry.js", () => ({
-  loadPluginManifestRegistry,
+vi.mock("./plugins/plugin-registry.js", () => ({
+  loadPluginManifestRegistryForPluginRegistry,
+  loadPluginRegistrySnapshotWithMetadata: () => ({
+    source: "derived",
+    snapshot: { plugins: [] },
+    diagnostics: [],
+  }),
+}));
+
+vi.mock("./secrets/channel-env-vars.js", () => ({
+  getChannelEnvVars: (channelId: string) => {
+    const varsByChannel: Record<string, string[]> = {
+      discord: ["DISCORD_BOT_TOKEN"],
+      irc: ["IRC_HOST", "IRC_NICK"],
+      slack: ["SLACK_BOT_TOKEN"],
+      telegram: ["TELEGRAM_BOT_TOKEN"],
+    };
+    return varsByChannel[channelId] ?? [];
+  },
 }));
 
 vi.mock("./plugin-sdk/facade-loader.js", () => ({
@@ -68,7 +113,7 @@ vi.mock("./plugin-sdk/facade-loader.js", () => ({
 
 vi.mock("./plugin-sdk/facade-runtime.js", () => ({
   ...facadeMockHelpers,
-  __testing: {},
+  testing: {},
   canLoadActivatedBundledPluginPublicSurface: () => true,
   listImportedBundledPluginFacadeIds: () => [],
   loadActivatedBundledPluginPublicSurfaceModuleSync: loadBundledPluginPublicSurfaceModuleSync,
@@ -93,8 +138,15 @@ describe("plugin activation boundary", () => {
       }),
     ).toBe(true);
     expect(isStaticallyChannelConfigured({}, "whatsapp", {})).toBe(false);
-    const staticNormalize = { allowPluginNormalization: false };
+    const staticNormalize = {
+      allowPluginNormalization: false,
+      manifestPlugins: [{ modelIdNormalization: testModelIdNormalization }],
+    };
     expect(normalizeModelRef("google", "gemini-3.1-pro", staticNormalize)).toEqual({
+      provider: "google",
+      model: "gemini-3.1-pro-preview",
+    });
+    expect(normalizeModelRef("google", "gemini-3-pro-preview", staticNormalize)).toEqual({
       provider: "google",
       model: "gemini-3.1-pro-preview",
     });
@@ -104,7 +156,6 @@ describe("plugin activation boundary", () => {
     });
     expect(loadBundledPluginPublicSurfaceModuleSync).not.toHaveBeenCalled();
 
-    expect(loadBundledPluginPublicSurfaceModuleSync).not.toHaveBeenCalled();
     expect(parseBrowserMajorVersion("Google Chrome 144.0.7534.0")).toBe(144);
     expect(
       loadBundledPluginPublicSurfaceModuleSync.mock.calls.map(

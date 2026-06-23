@@ -1,3 +1,4 @@
+// Telegram tests cover polling liveness plugin behavior.
 import { describe, expect, it, vi } from "vitest";
 import { TelegramPollingLivenessTracker } from "./polling-liveness.js";
 
@@ -5,7 +6,7 @@ const POLL_STALL_THRESHOLD_MS = 90_000;
 
 describe("TelegramPollingLivenessTracker", () => {
   it("records successful getUpdates calls and publishes poll success time", () => {
-    const nowValues = [0, 0, 10, 25];
+    const nowValues = [0, 10, 25];
     const now = vi.fn(() => nowValues.shift() ?? 25);
     const onPollSuccess = vi.fn();
     const tracker = new TelegramPollingLivenessTracker({ now, onPollSuccess });
@@ -20,22 +21,16 @@ describe("TelegramPollingLivenessTracker", () => {
     );
   });
 
-  it("does not detect a polling stall while a recent non-polling API call is in flight", () => {
+  it("detects stale polling without considering unrelated API activity", () => {
     let now = 0;
     const tracker = new TelegramPollingLivenessTracker({ now: () => now });
-
-    now = 60_000;
-    const callId = tracker.noteApiCallStarted();
 
     now = 120_001;
     expect(
       tracker.detectStall({
         thresholdMs: POLL_STALL_THRESHOLD_MS,
-        runnerIsRunning: true,
-      }),
-    ).toBeNull();
-
-    tracker.noteApiCallFinished(callId);
+      })?.message,
+    ).toContain("Polling stall detected");
   });
 
   it("detects and throttles stale polling diagnostics", () => {
@@ -45,7 +40,6 @@ describe("TelegramPollingLivenessTracker", () => {
     now = 120_001;
     const stall = tracker.detectStall({
       thresholdMs: POLL_STALL_THRESHOLD_MS,
-      runnerIsRunning: true,
     });
     expect(stall?.message).toContain("Polling stall detected (no completed getUpdates");
     expect(stall?.message).toContain("inFlight=0 outcome=not-started");
@@ -54,7 +48,6 @@ describe("TelegramPollingLivenessTracker", () => {
     expect(
       tracker.detectStall({
         thresholdMs: POLL_STALL_THRESHOLD_MS,
-        runnerIsRunning: true,
       }),
     ).toBeNull();
   });
@@ -69,7 +62,6 @@ describe("TelegramPollingLivenessTracker", () => {
     now = 120_001;
     const stall = tracker.detectStall({
       thresholdMs: POLL_STALL_THRESHOLD_MS,
-      runnerIsRunning: true,
     });
 
     expect(stall?.message).toContain("active getUpdates stuck");

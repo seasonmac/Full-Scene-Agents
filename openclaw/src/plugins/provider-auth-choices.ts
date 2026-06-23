@@ -1,7 +1,14 @@
+// Builds provider auth choice lists from plugin setup metadata.
+import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
 import { resolveProviderIdForAuth } from "../agents/provider-auth-aliases.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
-import { loadPluginManifestRegistry, type PluginManifestRecord } from "./manifest-registry.js";
+import { loadManifestMetadataSnapshot } from "./manifest-contract-eligibility.js";
+import type { PluginManifestRecord } from "./manifest-registry.js";
+import {
+  getOfficialExternalPluginCatalogManifest,
+  listOfficialExternalProviderCatalogEntries,
+} from "./official-external-plugin-catalog.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
 
 export type ProviderAuthChoiceMetadata = {
@@ -17,11 +24,12 @@ export type ProviderAuthChoiceMetadata = {
   groupId?: string;
   groupLabel?: string;
   groupHint?: string;
+  onboardingFeatured?: boolean;
   optionKey?: string;
   cliFlag?: string;
   cliOption?: string;
   cliDescription?: string;
-  onboardingScopes?: ("text-inference" | "image-generation")[];
+  onboardingScopes?: ("text-inference" | "image-generation" | "music-generation")[];
 };
 
 export type ProviderOnboardAuthFlag = {
@@ -53,6 +61,15 @@ const PROVIDER_AUTH_CHOICE_ORIGIN_PRIORITY: Readonly<Record<PluginOrigin, number
   global: 2,
   workspace: 3,
 };
+const DESCRIPTOR_LABEL_ACRONYMS: ReadonlyMap<string, string> = new Map([
+  ["api", "API"],
+  ["jwt", "JWT"],
+  ["oauth", "OAuth"],
+  ["oidc", "OIDC"],
+  ["pkce", "PKCE"],
+  ["saml", "SAML"],
+  ["sso", "SSO"],
+] as const);
 
 function resolveProviderAuthChoiceOriginPriority(origin: PluginOrigin | undefined): number {
   if (!origin) {
@@ -83,12 +100,80 @@ function toProviderAuthChoiceCandidate(params: {
     ...(choice.groupId ? { groupId: choice.groupId } : {}),
     ...(choice.groupLabel ? { groupLabel: choice.groupLabel } : {}),
     ...(choice.groupHint ? { groupHint: choice.groupHint } : {}),
+    ...(choice.onboardingFeatured ? { onboardingFeatured: true } : {}),
     ...(choice.optionKey ? { optionKey: choice.optionKey } : {}),
     ...(choice.cliFlag ? { cliFlag: choice.cliFlag } : {}),
     ...(choice.cliOption ? { cliOption: choice.cliOption } : {}),
     ...(choice.cliDescription ? { cliDescription: choice.cliDescription } : {}),
     ...(choice.onboardingScopes ? { onboardingScopes: choice.onboardingScopes } : {}),
   };
+}
+
+function formatDescriptorLabel(value: string): string {
+  return sanitizeForLog(value)
+    .trim()
+    .split(/[-_\s]+/gu)
+    .filter(Boolean)
+    .map((part) => {
+      const lower = part.toLowerCase();
+      const acronym = DESCRIPTOR_LABEL_ACRONYMS.get(lower);
+      if (acronym) {
+        return acronym;
+      }
+      return `${lower.slice(0, 1).toUpperCase()}${lower.slice(1)}`;
+    })
+    .join(" ");
+}
+
+function normalizeManifestAuthDescriptorId(value: string): string {
+  return sanitizeForLog(value).trim();
+}
+
+function toSetupProviderAuthChoiceCandidate(params: {
+  plugin: PluginManifestRecord;
+  providerId: string;
+  methodId: string;
+}): ProviderAuthChoiceCandidate {
+  const providerLabel = formatDescriptorLabel(params.providerId);
+  const methodLabel = formatDescriptorLabel(params.methodId);
+  const choiceLabel =
+    params.methodId === "api-key" ? `${providerLabel} API key` : `${providerLabel} ${methodLabel}`;
+  return {
+    pluginId: params.plugin.id,
+    origin: params.plugin.origin,
+    providerId: params.providerId,
+    methodId: params.methodId,
+    choiceId: `${params.providerId}-${params.methodId}`,
+    choiceLabel,
+    groupId: params.providerId,
+    groupLabel: providerLabel,
+  };
+}
+
+function listSetupProviderAuthChoiceCandidates(plugin: PluginManifestRecord) {
+  if (plugin.setup?.requiresRuntime !== false && plugin.setupSource) {
+    return [];
+  }
+  const explicitProviderMethods = new Set(
+    (plugin.providerAuthChoices ?? []).map((choice) => `${choice.provider}::${choice.method}`),
+  );
+  return (plugin.setup?.providers ?? []).flatMap((provider) => {
+    const providerId = normalizeManifestAuthDescriptorId(provider.id);
+    if (!providerId) {
+      return [];
+    }
+    return (provider.authMethods ?? [])
+      .map(normalizeManifestAuthDescriptorId)
+      .filter(Boolean)
+      .filter((methodId) => !explicitProviderMethods.has(`${providerId}::${methodId}`))
+      .map((methodId) =>
+        toSetupProviderAuthChoiceCandidate({
+          plugin,
+          providerId,
+          methodId,
+        }),
+      );
+  });
 }
 
 function stripChoiceOrigin(choice: ProviderAuthChoiceCandidate): ProviderAuthChoiceMetadata {
@@ -102,11 +187,12 @@ function resolveManifestProviderAuthChoiceCandidates(params?: {
   env?: NodeJS.ProcessEnv;
   includeUntrustedWorkspacePlugins?: boolean;
 }): ProviderAuthChoiceCandidate[] {
-  const registry = loadPluginManifestRegistry({
-    config: params?.config,
+  const metadataSnapshot = loadManifestMetadataSnapshot({
+    config: params?.config ?? {},
     workspaceDir: params?.workspaceDir,
-    env: params?.env,
+    env: params?.env ?? process.env,
   });
+  const registry = metadataSnapshot.manifestRegistry;
   const normalizedConfig = normalizePluginsConfig(params?.config?.plugins);
   return registry.plugins.flatMap((plugin) => {
     if (
@@ -121,13 +207,18 @@ function resolveManifestProviderAuthChoiceCandidates(params?: {
     ) {
       return [];
     }
-    return (plugin.providerAuthChoices ?? []).map((choice) =>
-      toProviderAuthChoiceCandidate({
-        pluginId: plugin.id,
-        origin: plugin.origin,
-        choice,
-      }),
-    );
+    const choices: ProviderAuthChoiceCandidate[] = [];
+    for (const choice of plugin.providerAuthChoices ?? []) {
+      choices.push(
+        toProviderAuthChoiceCandidate({
+          pluginId: plugin.id,
+          origin: plugin.origin,
+          choice,
+        }),
+      );
+    }
+    choices.push(...listSetupProviderAuthChoiceCandidates(plugin));
+    return choices;
   });
 }
 
@@ -273,6 +364,49 @@ export function resolveManifestProviderOnboardAuthFlags(
       cliOption: choice.cliOption,
       description: choice.cliDescription ?? choice.choiceLabel,
     });
+  }
+  return flags;
+}
+
+function resolveOfficialExternalProviderOnboardAuthFlags(): ProviderOnboardAuthFlag[] {
+  const flags: ProviderOnboardAuthFlag[] = [];
+  for (const entry of listOfficialExternalProviderCatalogEntries()) {
+    const manifest = getOfficialExternalPluginCatalogManifest(entry);
+    for (const provider of manifest?.providers ?? []) {
+      for (const choice of provider.authChoices ?? []) {
+        const optionKey = choice.optionKey?.trim();
+        const authChoice = choice.choiceId?.trim();
+        const cliFlag = choice.cliFlag?.trim();
+        const cliOption = choice.cliOption?.trim();
+        if (!optionKey || !authChoice || !cliFlag || !cliOption) {
+          continue;
+        }
+        flags.push({
+          optionKey,
+          authChoice,
+          cliFlag,
+          cliOption,
+          description: choice.cliDescription?.trim() || choice.choiceLabel?.trim() || authChoice,
+        });
+      }
+    }
+  }
+  return flags;
+}
+
+/** Resolves onboard auth flags from installed manifests and official cold-install metadata. */
+export function resolveProviderOnboardAuthFlags(
+  params?: ManifestProviderAuthChoiceParams,
+): ProviderOnboardAuthFlag[] {
+  const flags = resolveManifestProviderOnboardAuthFlags(params);
+  const seen = new Set(flags.map((flag) => `${flag.optionKey}::${flag.cliFlag}`));
+  for (const flag of resolveOfficialExternalProviderOnboardAuthFlags()) {
+    const dedupeKey = `${flag.optionKey}::${flag.cliFlag}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    flags.push(flag);
   }
   return flags;
 }

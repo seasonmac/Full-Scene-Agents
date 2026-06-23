@@ -1,7 +1,6 @@
+// Whatsapp tests cover login plugin behavior.
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { resetLogger, setLoggerOverride } from "openclaw/plugin-sdk/runtime-env";
+import { resetLogger, setLoggerOverride, success } from "openclaw/plugin-sdk/runtime-env";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderQrPngBase64 } from "./qr-image.js";
 
@@ -18,6 +17,10 @@ vi.mock("./session.js", async () => {
     ...actual,
     createWaSocket: vi.fn().mockResolvedValue(sock),
     waitForWaConnection: vi.fn().mockResolvedValue(undefined),
+    readWebAuthExistsForDecision: vi.fn(async () => ({
+      outcome: "stable" as const,
+      exists: true,
+    })),
   };
 });
 
@@ -76,7 +79,7 @@ describe("web login", () => {
     await loginWeb(false, waiter);
 
     expect(consoleLog).toHaveBeenCalledWith(
-      expect.stringContaining("✅ Recovered from creds.json.bak; web session ready."),
+      success("✅ Recovered from creds.json.bak; web session ready."),
     );
     consoleLog.mockRestore();
   });
@@ -87,14 +90,5 @@ describe("renderQrPngBase64", () => {
     const b64 = await renderQrPngBase64("openclaw");
     const buf = Buffer.from(b64, "base64");
     expect(buf.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
-  });
-
-  it("avoids dynamic require of qrcode-terminal vendor modules", async () => {
-    const sourcePath = resolve(process.cwd(), "src/media/qr-image.ts");
-    const source = await readFile(sourcePath, "utf-8");
-    expect(source).not.toContain("createRequire(");
-    expect(source).not.toContain('require("qrcode-terminal/vendor/QRCode")');
-    expect(source).toContain("qrcode-terminal/vendor/QRCode/index.js");
-    expect(source).toContain("qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel.js");
   });
 });

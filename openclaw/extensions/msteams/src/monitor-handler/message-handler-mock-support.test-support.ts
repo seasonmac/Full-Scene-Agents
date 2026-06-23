@@ -1,3 +1,4 @@
+// Msteams plugin module implements message handler mock support support behavior.
 import { vi } from "vitest";
 
 const runtimeApiMockState = vi.hoisted(() => ({
@@ -12,9 +13,8 @@ export function getRuntimeApiMockState() {
   return runtimeApiMockState;
 }
 
-vi.mock("../../runtime-api.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../runtime-api.js")>("../../runtime-api.js");
+vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/channel-inbound")>();
   return {
     ...actual,
     dispatchReplyFromConfigWithSettledDispatcher:

@@ -1,5 +1,8 @@
+import type { GroupToolPolicyConfig } from "openclaw/plugin-sdk/channel-policy";
+// Qqbot type declarations define plugin contracts.
 import type { SecretInput } from "openclaw/plugin-sdk/secret-input";
 import type { QQBotDmPolicy, QQBotGroupPolicy } from "./engine/access/index.js";
+import type { QQBotGroupCommandLevel } from "./engine/config/group.js";
 
 export type { QQBotDmPolicy, QQBotGroupPolicy };
 
@@ -32,6 +35,17 @@ export interface QQBotExecApprovalConfig {
   agentFilter?: string[];
   sessionFilter?: string[];
   target?: "dm" | "channel" | "both";
+}
+
+export interface QQBotGroupConfig {
+  requireMention?: boolean;
+  commandLevel?: QQBotGroupCommandLevel;
+  ignoreOtherMentions?: boolean;
+  historyLimit?: number;
+  name?: string;
+  prompt?: string;
+  tools?: GroupToolPolicyConfig;
+  toolsBySender?: Record<string, GroupToolPolicyConfig>;
 }
 
 /** QQ Bot account config from user settings. */
@@ -104,13 +118,19 @@ export interface QQBotAccountConfig {
    */
   upgradeMode?: "doc" | "hot-reload";
   /**
-   * Block streaming configuration.
-   * - mode "partial" (default): enable block streaming for incremental delivery.
-   * - mode "off": buffer the full response before sending.
+   * Block streaming + optional QQ C2C official stream API.
+   * - `true`: same as `mode: "partial"` and `c2cStreamApi: true` (recommended).
+   * - `false` / omitted: no official C2C stream for this account (see object form for fine control).
+   * - Object (legacy / advanced): `mode` "partial" | "off", `c2cStreamApi` for C2C `/stream_messages`.
    */
-  streaming?: {
-    mode?: "off" | "partial";
-  };
+  streaming?:
+    | boolean
+    | {
+        mode?: "off" | "partial";
+        /** @deprecated Prefer `streaming: true`. */
+        c2cStreamApi?: boolean;
+      };
+  groups?: Record<string, QQBotGroupConfig>;
 }
 
 /** Audio format policy controlling which formats can skip transcoding. */

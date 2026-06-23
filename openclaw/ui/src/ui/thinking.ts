@@ -1,3 +1,4 @@
+// Control UI module implements thinking behavior.
 import { normalizeLowercaseStringOrEmpty } from "./string-coerce.ts";
 
 export type ThinkingCatalogEntry = {
@@ -7,25 +8,6 @@ export type ThinkingCatalogEntry = {
 };
 
 const BASE_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"] as const;
-
-export function normalizeThinkingProviderId(provider?: string | null): string {
-  if (!provider) {
-    return "";
-  }
-  const normalized = normalizeLowercaseStringOrEmpty(provider);
-  if (normalized === "z.ai" || normalized === "z-ai") {
-    return "zai";
-  }
-  if (normalized === "bedrock" || normalized === "aws-bedrock") {
-    return "amazon-bedrock";
-  }
-  return normalized;
-}
-
-export function isBinaryThinkingProvider(provider?: string | null): boolean {
-  void provider;
-  return false;
-}
 
 export function normalizeThinkLevel(raw?: string | null): string | undefined {
   if (!raw) {
@@ -42,7 +24,7 @@ export function normalizeThinkLevel(raw?: string | null): string | undefined {
   if (collapsed === "xhigh" || collapsed === "extrahigh") {
     return "xhigh";
   }
-  if (key === "off") {
+  if (key === "off" || key === "none") {
     return "off";
   }
   if (["on", "enable", "enabled"].includes(key)) {

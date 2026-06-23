@@ -1,3 +1,4 @@
+// Status runtime shared tests cover gateway health, runtime details, and safe status probe fallbacks.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   resolveStatusGatewayHealth,
@@ -40,6 +41,26 @@ vi.mock("./status.daemon.js", () => ({
   getNodeDaemonStatusSummary: mocks.getNodeDaemonStatusSummary,
 }));
 
+function requireProviderUsageCall(): {
+  timeoutMs?: number;
+  config?: unknown;
+  agentDir?: string;
+} {
+  const call = mocks.loadProviderUsageSummary.mock.calls[0];
+  if (!call) {
+    throw new Error("expected provider usage summary call");
+  }
+  const params = call.at(0);
+  if (!params || typeof params !== "object") {
+    throw new Error("expected provider usage summary params");
+  }
+  return params as {
+    timeoutMs?: number;
+    config?: unknown;
+    agentDir?: string;
+  };
+}
+
 describe("status-runtime-shared", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -67,11 +88,15 @@ describe("status-runtime-shared", () => {
       deep: false,
       includeFilesystem: true,
       includeChannelSecurity: true,
-      plugins: expect.any(Array),
+      loadPluginSecurityCollectors: false,
+      plugins: [{ id: "telegram" }],
     });
     expect(mocks.resolveReadOnlyChannelPluginsForConfig).toHaveBeenCalledWith(
       { gateway: {} },
-      { activationSourceConfig: { gateway: {} } },
+      {
+        activationSourceConfig: { gateway: {} },
+        includeSetupFallbackPlugins: false,
+      },
     );
   });
 
@@ -93,13 +118,34 @@ describe("status-runtime-shared", () => {
       deep: false,
       includeFilesystem: true,
       includeChannelSecurity: true,
+      loadPluginSecurityCollectors: false,
     });
   });
 
   it("resolves usage summaries with the provided timeout", async () => {
-    await resolveStatusUsageSummary(1234);
+    await resolveStatusUsageSummary({
+      timeoutMs: 1234,
+      config: { gateway: {} },
+    });
 
-    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({ timeoutMs: 1234 });
+    const usageCall = requireProviderUsageCall();
+    expect(usageCall.timeoutMs).toBe(1234);
+    expect(usageCall.config).toEqual({ gateway: {} });
+    expect(usageCall.agentDir).toContain("main");
+  });
+
+  it("resolves usage summaries with explicit agent scope", async () => {
+    await resolveStatusUsageSummary({
+      timeoutMs: 2345,
+      config: { gateway: {} },
+      agentDir: "/tmp/status-agent",
+    });
+
+    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({
+      timeoutMs: 2345,
+      config: { gateway: {} },
+      agentDir: "/tmp/status-agent",
+    });
   });
 
   it("resolves gateway health with the shared probe call shape", async () => {
@@ -200,7 +246,10 @@ describe("status-runtime-shared", () => {
       gatewayService: { label: "LaunchAgent" },
       nodeService: { label: "node" },
     });
-    expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({ timeoutMs: 1234 });
+    const usageCall = requireProviderUsageCall();
+    expect(usageCall.timeoutMs).toBe(1234);
+    expect(usageCall.config).toEqual({ gateway: {} });
+    expect(usageCall.agentDir).toContain("main");
     expect(mocks.callGateway).toHaveBeenNthCalledWith(1, {
       method: "health",
       params: { probe: true },
@@ -278,9 +327,11 @@ describe("status-runtime-shared", () => {
       config: { gateway: {} },
       sourceConfig: { gateway: { mode: "local" } },
       deep: false,
+      deepTimeoutMs: 1234,
       includeFilesystem: true,
       includeChannelSecurity: true,
-      plugins: expect.any(Array),
+      loadPluginSecurityCollectors: false,
+      plugins: [{ id: "telegram" }],
     });
   });
 });

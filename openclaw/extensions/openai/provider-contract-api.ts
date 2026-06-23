@@ -1,49 +1,15 @@
+// Openai API module exposes the plugin public contract.
 import type { ProviderPlugin } from "openclaw/plugin-sdk/provider-model-shared";
+import {
+  OPENAI_ACCOUNT_WIZARD_GROUP,
+  OPENAI_API_KEY_LABEL,
+  OPENAI_CHATGPT_DEVICE_PAIRING_HINT,
+  OPENAI_CHATGPT_DEVICE_PAIRING_LABEL,
+  OPENAI_CHATGPT_LOGIN_HINT,
+  OPENAI_CHATGPT_LOGIN_LABEL,
+} from "./auth-choice-copy.js";
 
 const noopAuth = async () => ({ profiles: [] });
-const OPENAI_WIZARD_GROUP = {
-  groupId: "openai",
-  groupLabel: "OpenAI",
-  groupHint: "API key + Codex auth",
-} as const;
-
-export function createOpenAICodexProvider(): ProviderPlugin {
-  return {
-    id: "openai-codex",
-    label: "OpenAI Codex",
-    docsPath: "/providers/models",
-    auth: [
-      {
-        id: "oauth",
-        kind: "oauth",
-        label: "OpenAI Codex Browser Login",
-        hint: "Sign in with OpenAI in your browser",
-        run: noopAuth,
-        wizard: {
-          choiceId: "openai-codex",
-          choiceLabel: "OpenAI Codex Browser Login",
-          choiceHint: "Sign in with OpenAI in your browser",
-          assistantPriority: -30,
-          ...OPENAI_WIZARD_GROUP,
-        },
-      },
-      {
-        id: "device-code",
-        kind: "device_code",
-        label: "OpenAI Codex Device Pairing",
-        hint: "Pair in browser with a device code",
-        run: noopAuth,
-        wizard: {
-          choiceId: "openai-codex-device-code",
-          choiceLabel: "OpenAI Codex Device Pairing",
-          choiceHint: "Pair in browser with a device code",
-          assistantPriority: -10,
-          ...OPENAI_WIZARD_GROUP,
-        },
-      },
-    ],
-  };
-}
 
 export function createOpenAIProvider(): ProviderPlugin {
   return {
@@ -54,16 +20,47 @@ export function createOpenAIProvider(): ProviderPlugin {
     envVars: ["OPENAI_API_KEY"],
     auth: [
       {
+        id: "oauth",
+        kind: "oauth",
+        label: OPENAI_CHATGPT_LOGIN_LABEL,
+        hint: OPENAI_CHATGPT_LOGIN_HINT,
+        run: noopAuth,
+        wizard: {
+          choiceId: "openai",
+          choiceLabel: OPENAI_CHATGPT_LOGIN_LABEL,
+          choiceHint: OPENAI_CHATGPT_LOGIN_HINT,
+          assistantPriority: -40,
+          onboardingFeatured: true,
+          ...OPENAI_ACCOUNT_WIZARD_GROUP,
+        },
+      },
+      {
+        id: "device-code",
+        kind: "device_code",
+        label: OPENAI_CHATGPT_DEVICE_PAIRING_LABEL,
+        hint: OPENAI_CHATGPT_DEVICE_PAIRING_HINT,
+        run: noopAuth,
+        wizard: {
+          choiceId: "openai-device-code",
+          choiceLabel: OPENAI_CHATGPT_DEVICE_PAIRING_LABEL,
+          choiceHint: OPENAI_CHATGPT_DEVICE_PAIRING_HINT,
+          assistantPriority: -10,
+          assistantVisibility: "manual-only",
+          ...OPENAI_ACCOUNT_WIZARD_GROUP,
+        },
+      },
+      {
         id: "api-key",
         kind: "api_key",
-        label: "OpenAI API Key",
+        label: OPENAI_API_KEY_LABEL,
         hint: "Use your OpenAI API key directly",
         run: noopAuth,
         wizard: {
           choiceId: "openai-api-key",
-          choiceLabel: "OpenAI API Key",
-          assistantPriority: -40,
-          ...OPENAI_WIZARD_GROUP,
+          choiceLabel: OPENAI_API_KEY_LABEL,
+          choiceHint: "Use your OpenAI API key directly",
+          assistantPriority: 5,
+          ...OPENAI_ACCOUNT_WIZARD_GROUP,
         },
       },
     ],

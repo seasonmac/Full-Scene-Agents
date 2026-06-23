@@ -1,14 +1,25 @@
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveConversationIdFromTargets } from "../infra/outbound/conversation-id.js";
-import { normalizeConversationTargetRef } from "../infra/outbound/session-binding-normalization.js";
-import { getActivePluginChannelRegistry } from "../plugins/runtime.js";
+/**
+ * Canonical conversation resolution for command and inbound channel flows.
+ * This module turns channel targets, thread ids, aliases, and plugin hooks into stable binding ids.
+ */
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
-} from "../shared/string-coerce.js";
-import { getChannelPlugin, getLoadedChannelPlugin, normalizeChannelId } from "./plugins/index.js";
-import { parseExplicitTargetForChannel } from "./plugins/target-parsing.js";
+} from "@openclaw/normalization-core/string-coerce";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  resolveTargetPrefixedChannel,
+  stripTargetKindPrefix,
+  stripTargetProviderPrefix,
+  stripTargetTopicSuffix,
+} from "../infra/outbound/channel-target-prefix.js";
+import { resolveConversationIdFromTargets } from "../infra/outbound/conversation-id.js";
+import { normalizeConversationTargetRef } from "../infra/outbound/session-binding-normalization.js";
+import { stringifyRouteThreadId } from "../plugin-sdk/channel-route.js";
+import { getActivePluginChannelRegistry } from "../plugins/runtime.js";
+import { getLoadedChannelPlugin, normalizeChannelId } from "./plugins/index.js";
+import { resolveExplicitDeliveryTargetCompat } from "./plugins/target-parsing-loaded.js";
 import {
   resolveBundledChannelThreadBindingDefaultPlacement,
   resolveBundledChannelThreadBindingInboundConversation,
@@ -17,7 +28,7 @@ import type { ChannelCommandConversationContext } from "./plugins/types.adapters
 import type { ChannelPlugin } from "./plugins/types.plugin.js";
 import { normalizeAnyChannelId } from "./registry.js";
 
-export type ConversationResolutionSource =
+type ConversationResolutionSource =
   | "command-provider"
   | "focused-binding"
   | "command-fallback"
@@ -26,7 +37,7 @@ export type ConversationResolutionSource =
   | "inbound-bundled-plugin"
   | "inbound-fallback";
 
-export type ConversationResolution = {
+type ConversationResolution = {
   canonical: {
     channel: string;
     accountId: string;
@@ -38,6 +49,9 @@ export type ConversationResolution = {
   source: ConversationResolutionSource;
 };
 
+/**
+ * Command-side inputs used to resolve a canonical conversation binding target.
+ */
 export type ResolveCommandConversationResolutionInput = {
   cfg: OpenClawConfig;
   channel?: string | null;
@@ -53,14 +67,16 @@ export type ResolveCommandConversationResolutionInput = {
   fallbackTo?: string | null;
   from?: string | null;
   nativeChannelId?: string | null;
+  includePlacementHint?: boolean;
 };
 
-export type ResolveInboundConversationResolutionInput = {
+type ResolveInboundConversationResolutionInput = {
   cfg: OpenClawConfig;
   channel?: string | null;
   accountId?: string | null;
   to?: string | null;
   threadId?: string | number | null;
+  threadParentId?: string | number | null;
   conversationId?: string | null;
   groupId?: string | null;
   from?: string | null;
@@ -114,6 +130,7 @@ function normalizeResolutionTarget(params: {
   source: ConversationResolutionSource;
   threadId?: string;
   plugin?: ChannelPlugin;
+  includePlacementHint?: boolean;
 }): ConversationResolution | null {
   const conversationId = normalizeOptionalString(params.conversation?.conversationId);
   if (!conversationId) {
@@ -131,6 +148,10 @@ function normalizeResolutionTarget(params: {
   const normalizedParentConversationId = defaultParentToSelf
     ? normalized.conversationId
     : normalized.parentConversationId;
+  const placementHint =
+    params.includePlacementHint === false
+      ? undefined
+      : resolveChannelDefaultBindingPlacement(params.channel);
   return {
     canonical: {
       channel: params.channel,
@@ -141,7 +162,7 @@ function normalizeResolutionTarget(params: {
         : {}),
     },
     ...(params.threadId ? { threadId: params.threadId } : {}),
-    placementHint: resolveChannelDefaultBindingPlacement(params.channel),
+    ...(placementHint ? { placementHint } : {}),
     source: params.source,
   };
 }
@@ -158,9 +179,38 @@ function resolveBindingAccountId(params: {
   );
 }
 
+function resolveFallbackConversationTargetId(params: {
+  rawTarget: string;
+  allowNumericTopicShorthand?: boolean;
+  preserveExplicitTopicSuffix?: boolean;
+}): string | undefined {
+  const { allowNumericTopicShorthand = false } = params;
+  const target = normalizeOptionalString(params.rawTarget);
+  if (!target) {
+    return undefined;
+  }
+  const withoutKind = stripTargetKindPrefix(target);
+  const withoutTopic =
+    params.preserveExplicitTopicSuffix && /:topic:/iu.test(withoutKind)
+      ? withoutKind
+      : stripTargetTopicSuffix(withoutKind, {
+          allowNumericShorthand: allowNumericTopicShorthand,
+        });
+  return (
+    resolveConversationIdFromTargets({
+      targets: [withoutTopic],
+    }) ??
+    (withoutTopic !== target ? withoutTopic : undefined) ??
+    resolveConversationIdFromTargets({
+      targets: [target],
+    })
+  );
+}
+
 function resolveChannelTargetId(params: {
   channel: string;
   target?: string | null;
+  preserveExplicitTopicSuffix?: boolean;
 }): string | undefined {
   const target = normalizeOptionalString(params.target);
   if (!target) {
@@ -173,26 +223,47 @@ function resolveChannelTargetId(params: {
     return resolveChannelTargetId({
       channel: params.channel,
       target: target.slice(channelPrefix.length),
+      preserveExplicitTopicSuffix: params.preserveExplicitTopicSuffix,
     });
   }
   if (CANONICAL_TARGET_PREFIXES.some((prefix) => lower.startsWith(prefix))) {
     return target;
   }
 
-  const explicitConversationId = resolveConversationIdFromTargets({
-    targets: [target],
-  });
-  if (explicitConversationId) {
-    return explicitConversationId;
+  const prefixedChannel = resolveTargetPrefixedChannel(target);
+  if (!prefixedChannel || prefixedChannel !== params.channel) {
+    const explicitConversationId = resolveFallbackConversationTargetId({
+      rawTarget: target,
+      allowNumericTopicShorthand: params.channel === "telegram",
+      preserveExplicitTopicSuffix: params.preserveExplicitTopicSuffix,
+    });
+    if (explicitConversationId) {
+      return explicitConversationId;
+    }
   }
 
-  const parsed = parseExplicitTargetForChannel(params.channel, target);
-  const parsedTarget = normalizeOptionalString(parsed?.to);
-  if (parsedTarget) {
+  const normalizedTarget = normalizeOptionalString(
+    resolveRuntimeChannelPlugin(params.channel)?.messaging?.normalizeTarget?.(target),
+  );
+  if (normalizedTarget) {
+    const withoutProvider = stripTargetProviderPrefix(normalizedTarget, params.channel);
+    const conversationId = resolveFallbackConversationTargetId({
+      rawTarget: withoutProvider,
+      allowNumericTopicShorthand: params.channel === "telegram",
+      preserveExplicitTopicSuffix: params.preserveExplicitTopicSuffix,
+    });
+    return conversationId || withoutProvider || normalizedTarget;
+  }
+
+  const parsedTarget = resolveExplicitDeliveryTargetCompat({
+    channel: params.channel,
+    rawTarget: target,
+  });
+  if (parsedTarget?.to) {
     return (
       resolveConversationIdFromTargets({
-        targets: [parsedTarget],
-      }) ?? parsedTarget
+        targets: [parsedTarget.to],
+      }) ?? parsedTarget.to
     );
   }
 
@@ -218,6 +289,9 @@ function buildThreadingContext(params: {
   };
 }
 
+/**
+ * Resolves whether top-level bindings default to the current conversation or a child thread.
+ */
 export function resolveChannelDefaultBindingPlacement(
   rawChannel?: string | null,
 ): "current" | "child" | undefined {
@@ -227,13 +301,12 @@ export function resolveChannelDefaultBindingPlacement(
   }
   const pluginPlacement =
     resolveRuntimeChannelPlugin(channel)?.conversationBindings?.defaultTopLevelPlacement;
-  return (
-    pluginPlacement ??
-    resolveBundledChannelThreadBindingDefaultPlacement(channel) ??
-    getChannelPlugin(channel)?.conversationBindings?.defaultTopLevelPlacement
-  );
+  return pluginPlacement ?? resolveBundledChannelThreadBindingDefaultPlacement(channel);
 }
 
+/**
+ * Resolves command context into a canonical channel/account/conversation tuple.
+ */
 export function resolveCommandConversationResolution(
   params: ResolveCommandConversationResolutionInput,
 ): ConversationResolution | null {
@@ -247,9 +320,7 @@ export function resolveCommandConversationResolution(
     plugin,
     cfg: params.cfg,
   });
-  const threadId = normalizeOptionalString(
-    params.threadId != null ? String(params.threadId) : undefined,
-  );
+  const threadId = stringifyRouteThreadId(params.threadId);
 
   const commandParams: ChannelCommandConversationContext = {
     accountId,
@@ -273,6 +344,7 @@ export function resolveCommandConversationResolution(
     source: "command-provider",
     threadId,
     plugin,
+    includePlacementHint: params.includePlacementHint,
   });
   if (providerResolution) {
     return providerResolution;
@@ -297,6 +369,7 @@ export function resolveCommandConversationResolution(
     source: "focused-binding",
     threadId,
     plugin,
+    includePlacementHint: params.includePlacementHint,
   });
   if (focusedResolution) {
     return focusedResolution;
@@ -337,9 +410,13 @@ export function resolveCommandConversationResolution(
     source: "command-fallback",
     threadId,
     plugin,
+    includePlacementHint: params.includePlacementHint,
   });
 }
 
+/**
+ * Resolves inbound message context into the canonical binding conversation tuple.
+ */
 export function resolveInboundConversationResolution(
   params: ResolveInboundConversationResolutionInput,
 ): ConversationResolution | null {
@@ -353,9 +430,7 @@ export function resolveInboundConversationResolution(
     plugin,
     cfg: params.cfg,
   });
-  const threadId = normalizeOptionalString(
-    params.threadId != null ? String(params.threadId) : undefined,
-  );
+  const threadId = stringifyRouteThreadId(params.threadId);
   const resolverParams = {
     from: normalizeOptionalString(params.from),
     to: normalizeOptionalString(params.to),
@@ -364,6 +439,7 @@ export function resolveInboundConversationResolution(
       normalizeOptionalString(params.groupId) ??
       normalizeOptionalString(params.to),
     threadId,
+    threadParentId: stringifyRouteThreadId(params.threadParentId),
     isGroup: params.isGroup ?? true,
   };
 
@@ -377,6 +453,8 @@ export function resolveInboundConversationResolution(
     plugin,
   });
   if (providerResolution || providerConversation === null) {
+    // A null provider response is an explicit rejection, not a signal to try
+    // bundled/fallback parsing for the same inbound target.
     return providerResolution;
   }
 
@@ -393,48 +471,42 @@ export function resolveInboundConversationResolution(
     plugin,
   });
   if (artifactResolution || artifactConversation === null) {
+    // Lightweight bundled artifacts can also reject targets before full plugin loading.
     return artifactResolution;
-  }
-
-  const bundledPlugin = getChannelPlugin(channel);
-  const bundledConversation =
-    bundledPlugin !== plugin
-      ? bundledPlugin?.messaging?.resolveInboundConversation?.(resolverParams)
-      : undefined;
-  const bundledResolution = normalizeResolutionTarget({
-    channel,
-    accountId,
-    conversation: bundledConversation,
-    source: "inbound-bundled-plugin",
-    threadId,
-    plugin: bundledPlugin ?? plugin,
-  });
-  if (bundledResolution || bundledConversation === null) {
-    return bundledResolution;
   }
 
   const parentConversationId =
     resolveChannelTargetId({
       channel,
+      target: params.threadParentId == null ? undefined : String(params.threadParentId),
+      preserveExplicitTopicSuffix: threadId == null,
+    }) ??
+    resolveChannelTargetId({
+      channel,
       target: params.to,
+      preserveExplicitTopicSuffix: threadId == null,
     }) ??
     resolveChannelTargetId({
       channel,
       target: params.conversationId,
+      preserveExplicitTopicSuffix: threadId == null,
     }) ??
     resolveChannelTargetId({
       channel,
       target: params.groupId,
+      preserveExplicitTopicSuffix: threadId == null,
     });
   const genericConversationId =
     threadId ??
     resolveChannelTargetId({
       channel,
       target: params.conversationId,
+      preserveExplicitTopicSuffix: threadId == null,
     }) ??
     resolveChannelTargetId({
       channel,
       target: params.groupId,
+      preserveExplicitTopicSuffix: threadId == null,
     }) ??
     parentConversationId;
   if (!genericConversationId) {

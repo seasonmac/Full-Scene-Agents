@@ -1,7 +1,7 @@
-import { Type } from "@sinclair/typebox";
+// Matrix plugin module implements actions behavior.
 import {
   createActionGate,
-  readNumberParam,
+  readPositiveIntegerParam,
   readStringParam,
   ToolAuthorizationError,
 } from "openclaw/plugin-sdk/channel-actions";
@@ -13,6 +13,7 @@ import type {
 } from "openclaw/plugin-sdk/channel-contract";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { extractToolSend } from "openclaw/plugin-sdk/tool-send";
+import { Type } from "typebox";
 import { requiresExplicitMatrixDefaultAccount } from "./account-selection.js";
 import { resolveDefaultMatrixAccountId, resolveMatrixAccount } from "./matrix/accounts.js";
 import type { CoreConfig } from "./types.js";
@@ -99,6 +100,7 @@ function createMatrixExposedActions(params: {
 
 function buildMatrixProfileToolSchema(): NonNullable<ChannelMessageToolDiscovery["schema"]> {
   return {
+    actions: ["set-profile"],
     properties: {
       displayName: Type.Optional(
         Type.String({
@@ -217,7 +219,9 @@ export const matrixMessageActions: ChannelMessageActionAdapter = {
 
     if (action === "reactions") {
       const messageId = readStringParam(params, "messageId", { required: true });
-      const limit = readNumberParam(params, "limit", { integer: true });
+      const limit = readPositiveIntegerParam(params, "limit", {
+        message: "limit must be a positive integer.",
+      });
       return await dispatch({
         action: "reactions",
         roomId: resolveRoomId(),
@@ -227,13 +231,16 @@ export const matrixMessageActions: ChannelMessageActionAdapter = {
     }
 
     if (action === "read") {
-      const limit = readNumberParam(params, "limit", { integer: true });
+      const limit = readPositiveIntegerParam(params, "limit", {
+        message: "limit must be a positive integer.",
+      });
       return await dispatch({
         action: "readMessages",
         roomId: resolveRoomId(),
         limit,
         before: readStringParam(params, "before"),
         after: readStringParam(params, "after"),
+        threadId: readStringParam(params, "threadId"),
       });
     }
 
