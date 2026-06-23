@@ -35,6 +35,7 @@ export class ApproachItem {
 export class PlanItem {
   label: string = '';
   value: string = '';
+  icon: string = '';
 }
 
 export class SkillStep {
@@ -68,6 +69,7 @@ export class UIBlock {
   options: ClarifyOption[] = [];
   selectedId: string = '';
   questionIndex: number = 0;
+  totalQuestions: number = 0;
 
   // approach-proposal
   approaches: ApproachItem[] = [];

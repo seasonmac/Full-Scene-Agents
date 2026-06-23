@@ -6,9 +6,7 @@ read_when:
 title: "StepFun"
 ---
 
-# StepFun
-
-OpenClaw includes a bundled StepFun provider plugin with two provider ids:
+The StepFun provider plugin supports two provider ids:
 
 - `stepfun` for the standard endpoint
 - `stepfun-plan` for the Step Plan endpoint
@@ -16,6 +14,15 @@ OpenClaw includes a bundled StepFun provider plugin with two provider ids:
 <Warning>
 Standard and Step Plan are **separate providers** with different endpoints and model ref prefixes (`stepfun/...` vs `stepfun-plan/...`). Use a China key with the `.com` endpoints and a global key with the `.ai` endpoints.
 </Warning>
+
+## Install plugin
+
+Install the official plugin, then restart Gateway:
+
+```bash
+openclaw plugins install @openclaw/stepfun-provider
+openclaw gateway restart
+```
 
 ## Region and endpoint overview
 
@@ -26,7 +33,7 @@ Standard and Step Plan are **separate providers** with different endpoints and m
 
 Auth env var: `STEPFUN_API_KEY`
 
-## Built-in catalogs
+## Built-in catalog
 
 Standard (`stepfun`):
 
@@ -128,7 +135,7 @@ Choose your provider surface and follow the setup steps.
   </Tab>
 </Tabs>
 
-## Advanced
+## Advanced configuration
 
 <AccordionGroup>
   <Accordion title="Full config: Standard provider">
@@ -201,10 +208,11 @@ Choose your provider surface and follow the setup steps.
   </Accordion>
 
   <Accordion title="Notes">
-    - The provider is bundled with OpenClaw, so there is no separate plugin install step.
+    - The provider is an official external package; install it before setup.
     - `step-3.5-flash-2603` is currently exposed only on `stepfun-plan`.
     - A single auth flow writes region-matched profiles for both `stepfun` and `stepfun-plan`, so both surfaces can be discovered together.
     - Use `openclaw models list` and `openclaw models set <provider/model>` to inspect or switch models.
+
   </Accordion>
 </AccordionGroup>
 
@@ -215,7 +223,7 @@ For the broader provider overview, see [Model providers](/concepts/model-provide
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Model providers" href="/concepts/model-providers" icon="layers">
+  <Card title="Model selection" href="/concepts/model-providers" icon="layers">
     Overview of all providers, model refs, and failover behavior.
   </Card>
   <Card title="Configuration reference" href="/gateway/configuration-reference" icon="gear">

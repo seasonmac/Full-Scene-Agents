@@ -1,22 +1,23 @@
-import ts from "typescript";
+// Creates reusable import-boundary guards for bundled extension source trees.
+import { promises as fs } from "node:fs";
 import { BUNDLED_PLUGIN_PATH_PREFIX } from "./bundled-plugin-paths.mjs";
 import {
-  collectTypeScriptInventory,
+  collectModuleReferencesFromSource,
   createCachedAsync,
   formatGroupedInventoryHuman,
   normalizeRepoPath,
   resolveRepoSpecifier,
-  visitModuleSpecifiers,
   writeLine,
 } from "./guard-inventory-utils.mjs";
+import { mapWithConcurrency } from "./source-file-scan-cache.mjs";
 import {
   collectTypeScriptFilesFromRoots,
   resolveRepoRoot,
   resolveSourceRoots,
-  toLine,
 } from "./ts-guard-utils.mjs";
 
 const repoRoot = resolveRepoRoot(import.meta.url);
+const DEFAULT_BOUNDARY_SOURCE_MAX_BYTES = 2 * 1024 * 1024;
 
 function compareEntries(left, right) {
   return (
@@ -38,33 +39,61 @@ function classifyResolvedExtensionReason(kind, boundaryLabel) {
   return `${verb} bundled plugin file from ${boundaryLabel} boundary`;
 }
 
-function scanImportBoundaryViolations(sourceFile, filePath, boundaryLabel, allowResolvedPath) {
+function scanImportBoundaryViolations(source, filePath, boundaryLabel, allowResolvedPath) {
   const entries = [];
   const relativeFile = normalizeRepoPath(repoRoot, filePath);
 
-  visitModuleSpecifiers(ts, sourceFile, ({ kind, specifier, specifierNode }) => {
+  for (const reference of collectModuleReferencesFromSource(source)) {
+    const kind = reference.kind;
+    const specifier = reference.specifier;
     const resolvedPath = resolveRepoSpecifier(repoRoot, specifier, filePath);
     if (!resolvedPath?.startsWith(BUNDLED_PLUGIN_PATH_PREFIX)) {
-      return;
+      continue;
     }
     if (allowResolvedPath?.(resolvedPath, { kind, specifier, file: relativeFile })) {
-      return;
+      continue;
     }
     entries.push({
       file: relativeFile,
-      line: toLine(sourceFile, specifierNode),
+      line: reference.line,
       kind,
       specifier,
       resolvedPath,
       reason: classifyResolvedExtensionReason(kind, boundaryLabel),
     });
-  });
+  }
 
   return entries;
 }
 
+function normalizeMaxSourceBytes(value) {
+  return Number.isInteger(value) && value > 0 ? value : DEFAULT_BOUNDARY_SOURCE_MAX_BYTES;
+}
+
+function assertSourceFileWithinLimit(filePath, bytes, maxBytes) {
+  if (bytes <= maxBytes) {
+    return;
+  }
+  throw new Error(
+    `extension import boundary source file exceeds ${maxBytes} byte limit: ${normalizeRepoPath(
+      repoRoot,
+      filePath,
+    )} (${bytes} bytes)`,
+  );
+}
+
+async function readBoundedSourceFile(filePath, maxBytes) {
+  const stat = await fs.stat(filePath);
+  assertSourceFileWithinLimit(filePath, stat.size, maxBytes);
+  const source = await fs.readFile(filePath, "utf8");
+  assertSourceFileWithinLimit(filePath, Buffer.byteLength(source, "utf8"), maxBytes);
+  return source;
+}
+
+/** Create a boundary checker with cached inventory collection and a CLI-style main function. */
 export function createExtensionImportBoundaryChecker(params) {
   const scanRoots = resolveSourceRoots(repoRoot, params.roots);
+  const maxSourceBytes = normalizeMaxSourceBytes(params.maxSourceBytes);
 
   const collectInventory = createCachedAsync(async () => {
     const files = (await collectTypeScriptFilesFromRoots(scanRoots))
@@ -72,27 +101,29 @@ export function createExtensionImportBoundaryChecker(params) {
       .toSorted((left, right) =>
         normalizeRepoPath(repoRoot, left).localeCompare(normalizeRepoPath(repoRoot, right)),
       );
-    return await collectTypeScriptInventory({
-      ts,
-      files,
-      compareEntries,
-      collectEntries(sourceFile, filePath) {
-        return scanImportBoundaryViolations(
-          sourceFile,
-          filePath,
-          params.boundaryLabel,
-          params.allowResolvedPath,
-        );
-      },
-      shouldParseSource: params.skipSourcesWithoutBundledPluginPrefix
-        ? (source) => source.includes(BUNDLED_PLUGIN_PATH_PREFIX)
-        : undefined,
+    const entriesByFile = await mapWithConcurrency(files, undefined, async (filePath) => {
+      const source = await readBoundedSourceFile(filePath, maxSourceBytes);
+      if (
+        params.skipSourcesWithoutBundledPluginPrefix &&
+        !source.includes(BUNDLED_PLUGIN_PATH_PREFIX)
+      ) {
+        return [];
+      }
+      return scanImportBoundaryViolations(
+        source,
+        filePath,
+        params.boundaryLabel,
+        params.allowResolvedPath,
+      );
     });
+    const inventory = entriesByFile.flat();
+    return inventory.toSorted(compareEntries);
   });
 
-  async function main(argv = process.argv.slice(2), io) {
+  async function main(argv, io) {
+    const args = argv ?? process.argv.slice(2);
     const streams = io ?? { stdout: process.stdout, stderr: process.stderr };
-    const json = argv.includes("--json");
+    const json = args.includes("--json");
     const inventory = await collectInventory();
 
     if (json) {

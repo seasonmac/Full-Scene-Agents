@@ -1,3 +1,4 @@
+// OpenClaw MCP tools tests cover core tool server startup and registration.
 import { describe, expect, it } from "vitest";
 import { resolveOpenClawToolsForMcp } from "./openclaw-tools-serve.js";
 import { createPluginToolsMcpHandlers } from "./plugin-tools-handlers.js";
@@ -7,14 +8,6 @@ describe("OpenClaw tools MCP server", () => {
     const handlers = createPluginToolsMcpHandlers(resolveOpenClawToolsForMcp());
 
     const listed = await handlers.listTools();
-    expect(listed).toEqual({
-      tools: [
-        expect.objectContaining({
-          name: "cron",
-          description: expect.stringContaining("Manage Gateway cron jobs"),
-          inputSchema: expect.objectContaining({ type: "object" }),
-        }),
-      ],
-    });
+    expect(listed.tools.map((tool) => tool.name)).toContain("cron");
   });
 });

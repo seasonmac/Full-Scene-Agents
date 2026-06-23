@@ -1,117 +1,257 @@
+// Provider auth runtime tests cover OAuth callback handling and provider auth flow helpers.
 import fs from "node:fs/promises";
+import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { saveAuthProfileStore } from "./agent-runtime.js";
+import { describe, expect, it, vi } from "vitest";
+import { saveAuthProfileStore } from "../agents/auth-profiles/store.js";
+import { MAX_TIMER_TIMEOUT_MS } from "../shared/number-coercion.js";
 import * as providerAuthRuntime from "./provider-auth-runtime.js";
 
+async function getFreePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Failed to allocate a local port")));
+        return;
+      }
+      const { port } = address;
+      server.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
+}
+
 describe("plugin-sdk provider-auth-runtime", () => {
-  const tempDirs: string[] = [];
-
-  async function makeTempDir(): Promise<string> {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-provider-auth-runtime-"));
-    tempDirs.push(dir);
-    return dir;
-  }
-
-  afterEach(async () => {
-    await Promise.all(
-      tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
-    );
-  });
-
   it("exports the runtime-ready auth helper", () => {
-    expect(typeof providerAuthRuntime.getRuntimeAuthForModel).toBe("function");
+    expect(providerAuthRuntime.getRuntimeAuthForModel).toBeTypeOf("function");
   });
 
-  it("exports the Codex auth bridge helper", () => {
-    expect(typeof providerAuthRuntime.prepareCodexAuthBridge).toBe("function");
-  });
-
-  it("exports OAuth callback helpers", () => {
-    expect(typeof providerAuthRuntime.generateOAuthState).toBe("function");
-    expect(typeof providerAuthRuntime.parseOAuthCallbackInput).toBe("function");
-    expect(typeof providerAuthRuntime.waitForLocalOAuthCallback).toBe("function");
-  });
-
-  it("does not write incomplete Codex ChatGPT auth without an id token", async () => {
-    const agentDir = await makeTempDir();
+  it("resolves non-secret provider auth profile metadata", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "provider-auth-runtime-"));
+    const agentDir = path.join(tempRoot, "agent");
     saveAuthProfileStore(
       {
         version: 1,
         profiles: {
-          "openai-codex:default": {
+          "openai:chatgpt": {
             type: "oauth",
-            provider: "openai-codex",
+            provider: "openai",
             access: "access-token",
             refresh: "refresh-token",
             expires: Date.now() + 60_000,
+            accountId: "acct-openai-workspace",
           },
         },
       },
       agentDir,
-      { filterExternalAuthProfiles: false },
     );
 
-    const bridge = await providerAuthRuntime.prepareCodexAuthBridge({
-      agentDir,
-      bridgeDir: "harness-auth",
-      profileId: "openai-codex:default",
+    expect(
+      providerAuthRuntime.resolveProviderAuthProfileMetadata({
+        provider: "openai",
+        profileId: "openai:chatgpt",
+        agentDir,
+      }),
+    ).toEqual({
+      profileId: "openai:chatgpt",
+      accountId: "acct-openai-workspace",
     });
-
-    expect(bridge).toBeUndefined();
   });
 
-  it("hydrates missing Codex id token from a matching source auth file", async () => {
-    const root = await makeTempDir();
-    const agentDir = path.join(root, "agent");
-    const sourceCodexHome = path.join(root, "codex-home");
-    await fs.mkdir(sourceCodexHome, { recursive: true });
-    await fs.writeFile(
-      path.join(sourceCodexHome, "auth.json"),
-      `${JSON.stringify(
-        {
-          auth_mode: "chatgpt",
-          tokens: {
-            id_token: "source-id-token",
-            access_token: "access-token",
-            refresh_token: "refresh-token",
-            account_id: "acct-123",
-          },
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: {
-          "openai-codex:default": {
-            type: "oauth",
-            provider: "openai-codex",
-            access: "access-token",
-            refresh: "refresh-token",
-            accountId: "acct-123",
-            expires: Date.now() + 60_000,
-          },
-        },
-      },
-      agentDir,
-      { filterExternalAuthProfiles: false },
-    );
+  it("generates random OAuth state tokens", () => {
+    const first = providerAuthRuntime.generateOAuthState();
+    const second = providerAuthRuntime.generateOAuthState();
 
-    const bridge = await providerAuthRuntime.prepareCodexAuthBridge({
-      agentDir,
-      bridgeDir: "harness-auth",
-      profileId: "openai-codex:default",
-      sourceCodexHome,
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(second).toMatch(/^[a-f0-9]{64}$/);
+    expect(second).not.toBe(first);
+  });
+
+  it("parses OAuth callback URLs and rejects bare codes", () => {
+    expect(
+      providerAuthRuntime.parseOAuthCallbackInput(
+        "http://127.0.0.1:3000/callback?code=abc&state=state-1",
+      ),
+    ).toEqual({ code: "abc", state: "state-1" });
+    expect(providerAuthRuntime.parseOAuthCallbackInput("abc")).toEqual({
+      error: "Paste the full redirect URL, not just the code.",
+    });
+  });
+
+  it("allows browser IdP pages to probe the localhost callback with CORS", async () => {
+    const port = await getFreePort();
+    const callback = providerAuthRuntime.waitForLocalOAuthCallback({
+      expectedState: "state-1",
+      timeoutMs: 5_000,
+      port,
+      callbackPath: "/callback",
+      redirectUri: `http://127.0.0.1:${port}/callback`,
+      hostname: "127.0.0.1",
+      successTitle: "OAuth complete",
+      corsOriginAllowlist: ["auth.x.ai", "accounts.x.ai"],
     });
 
-    expect(bridge?.codexHome).toContain(path.join(agentDir, "harness-auth", "codex"));
-    const authFile = JSON.parse(
-      await fs.readFile(path.join(bridge?.codexHome ?? "", "auth.json"), "utf8"),
+    const preflight = await fetch(`http://127.0.0.1:${port}/callback`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://auth.x.ai",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "content-type",
+        "Access-Control-Request-Private-Network": "true",
+      },
+    });
+
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("https://auth.x.ai");
+    expect(preflight.headers.get("access-control-allow-methods")).toContain("GET");
+    expect(preflight.headers.get("access-control-allow-private-network")).toBe("true");
+
+    const response = await fetch(`http://127.0.0.1:${port}/callback?code=code-1&state=state-1`, {
+      headers: {
+        Origin: "https://auth.x.ai",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://auth.x.ai");
+    await expect(callback).resolves.toEqual({ code: "code-1", state: "state-1" });
+  });
+
+  it("does not echo CORS for unallowlisted callback origins but keeps waiting", async () => {
+    const port = await getFreePort();
+    const callback = providerAuthRuntime.waitForLocalOAuthCallback({
+      expectedState: "state-1",
+      timeoutMs: 5_000,
+      port,
+      callbackPath: "/callback",
+      redirectUri: `http://127.0.0.1:${port}/callback`,
+      hostname: "127.0.0.1",
+      successTitle: "OAuth complete",
+      corsOriginAllowlist: ["auth.x.ai"],
+    });
+
+    const preflight = await fetch(`http://127.0.0.1:${port}/callback`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://attacker.example",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "content-type",
+        "Access-Control-Request-Private-Network": "true",
+      },
+    });
+
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
+    expect(preflight.headers.get("access-control-allow-methods")).toBeNull();
+    expect(preflight.headers.get("access-control-allow-headers")).toBeNull();
+    expect(preflight.headers.get("access-control-allow-private-network")).toBeNull();
+
+    const response = await fetch(`http://127.0.0.1:${port}/callback?code=code-1&state=state-1`, {
+      headers: {
+        Origin: "https://auth.x.ai",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://auth.x.ai");
+    await expect(callback).resolves.toEqual({ code: "code-1", state: "state-1" });
+  });
+
+  it("preserves legacy permissive CORS behavior when no allowlist is passed", async () => {
+    const port = await getFreePort();
+    const callback = providerAuthRuntime.waitForLocalOAuthCallback({
+      expectedState: "state-1",
+      timeoutMs: 5_000,
+      port,
+      callbackPath: "/callback",
+      redirectUri: `http://127.0.0.1:${port}/callback`,
+      hostname: "127.0.0.1",
+      successTitle: "OAuth complete",
+    });
+
+    const preflight = await fetch(`http://127.0.0.1:${port}/callback`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://legacy.example",
+        "Access-Control-Request-Method": "GET",
+      },
+    });
+
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("https://legacy.example");
+    expect(preflight.headers.get("access-control-allow-methods")).toContain("GET");
+
+    const response = await fetch(`http://127.0.0.1:${port}/callback?code=code-1&state=state-1`);
+    expect(response.status).toBe(200);
+    await expect(callback).resolves.toEqual({ code: "code-1", state: "state-1" });
+  });
+
+  it("clamps oversized OAuth callback timeouts before scheduling", async () => {
+    const port = await getFreePort();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      let callback!: Promise<providerAuthRuntime.OAuthCallbackResult>;
+      const listening = new Promise<void>((resolve) => {
+        callback = providerAuthRuntime.waitForLocalOAuthCallback({
+          expectedState: "state-1",
+          timeoutMs: Number.MAX_SAFE_INTEGER,
+          port,
+          callbackPath: "/callback",
+          redirectUri: `http://127.0.0.1:${port}/callback`,
+          hostname: "127.0.0.1",
+          successTitle: "OAuth complete",
+          onProgress: () => resolve(),
+        });
+      });
+      await listening;
+
+      const response = await fetch(`http://127.0.0.1:${port}/callback?code=code-1&state=state-1`);
+
+      expect(response.status).toBe(200);
+      await expect(callback).resolves.toEqual({ code: "code-1", state: "state-1" });
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), MAX_TIMER_TIMEOUT_MS);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+});
+
+describe("buildOAuthCallbackOriginResolver", () => {
+  it("returns a no-op resolver when no allowlist is provided", () => {
+    const noOp = providerAuthRuntime.buildOAuthCallbackOriginResolver(undefined);
+    expect(noOp("https://auth.example.com")).toBeUndefined();
+
+    const empty = providerAuthRuntime.buildOAuthCallbackOriginResolver([]);
+    expect(empty("https://auth.example.com")).toBeUndefined();
+
+    const blank = providerAuthRuntime.buildOAuthCallbackOriginResolver(["", "  "]);
+    expect(blank("https://auth.example.com")).toBeUndefined();
+  });
+
+  it("echoes only allowlisted hosts and only over https", () => {
+    const resolver = providerAuthRuntime.buildOAuthCallbackOriginResolver([
+      "auth.example.com",
+      "ACCOUNTS.example.com",
+    ]);
+
+    expect(resolver("https://auth.example.com")).toBe("https://auth.example.com");
+    expect(resolver("https://accounts.example.com")).toBe("https://accounts.example.com");
+    expect(resolver("https://AUTH.EXAMPLE.COM")).toBe("https://auth.example.com");
+    expect(resolver("https://attacker.example.com")).toBeUndefined();
+    expect(resolver("http://auth.example.com")).toBeUndefined();
+    expect(resolver("not a url")).toBeUndefined();
+    expect(resolver(undefined)).toBeUndefined();
+    expect(resolver([])).toBeUndefined();
+  });
+
+  it("uses the first value when multiple Origin headers arrive", () => {
+    const resolver = providerAuthRuntime.buildOAuthCallbackOriginResolver(["auth.example.com"]);
+    expect(resolver(["https://auth.example.com", "https://attacker.example.com"])).toBe(
+      "https://auth.example.com",
     );
-    expect(authFile.tokens.id_token).toBe("source-id-token");
+    expect(resolver(["https://attacker.example.com", "https://auth.example.com"])).toBeUndefined();
   });
 });

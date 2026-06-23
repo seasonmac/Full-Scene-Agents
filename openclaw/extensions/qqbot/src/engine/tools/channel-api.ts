@@ -8,11 +8,21 @@
  * validation, fetch, and structured response formatting.
  */
 
+import { readResponseTextLimited } from "openclaw/plugin-sdk/provider-http";
+import { fetchWithSsrFGuard, type SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import { formatErrorMessage } from "../utils/format.js";
 import { debugLog, debugError } from "../utils/log.js";
 
 const API_BASE = "https://api.sgroup.qq.com";
 const DEFAULT_TIMEOUT_MS = 30000;
+const CHANNEL_API_ERROR_BODY_LIMIT_BYTES = 8 * 1024;
+
+function resolveChannelApiSsrfPolicy(url: string): SsrFPolicy {
+  return {
+    hostnameAllowlist: [new URL(url).hostname],
+    allowRfc2544BenchmarkRange: true,
+  };
+}
 
 /**
  * Channel API call parameters.
@@ -63,7 +73,7 @@ export const ChannelApiSchema = {
  * Build the full API URL from base + path + query params.
  * 拼接 API 基地址 + 路径 + 查询参数。
  */
-export function buildUrl(path: string, query?: Record<string, string>): string {
+function buildUrl(path: string, query?: Record<string, string>): string {
   let url = `${API_BASE}${path}`;
   if (query && Object.keys(query).length > 0) {
     const params = new URLSearchParams();
@@ -84,7 +94,7 @@ export function buildUrl(path: string, query?: Record<string, string>): string {
  * Validate API path format; returns an error string or null if valid.
  * 校验 API 路径格式，返回错误描述或 null（合法）。
  */
-export function validatePath(path: string): string | null {
+function validatePath(path: string): string | null {
   if (!path.startsWith("/")) {
     return "path must start with /";
   }
@@ -108,7 +118,7 @@ function json(data: unknown) {
  * Options provided by the caller when executing a channel API request.
  * 执行频道 API 请求时由调用方提供的选项。
  */
-export interface ChannelApiExecuteOptions {
+interface ChannelApiExecuteOptions {
   accessToken: string;
 }
 
@@ -174,8 +184,16 @@ export async function executeChannelApi(
     debugLog(`[qqbot-channel-api] >>> ${method} ${url} (timeout: ${DEFAULT_TIMEOUT_MS}ms)`);
 
     let res: Response;
+    let release: (() => Promise<void>) | undefined;
     try {
-      res = await fetch(url, fetchOptions);
+      const guarded = await fetchWithSsrFGuard({
+        url,
+        init: fetchOptions,
+        auditContext: "qqbot-channel-api",
+        policy: resolveChannelApiSsrfPolicy(url),
+      });
+      res = guarded.response;
+      release = guarded.release;
     } catch (err) {
       clearTimeout(timeoutId);
       if (err instanceof Error && err.name === "AbortError") {
@@ -194,47 +212,53 @@ export async function executeChannelApi(
       clearTimeout(timeoutId);
     }
 
-    debugLog(`[qqbot-channel-api] <<< Status: ${res.status} ${res.statusText}`);
-
-    const rawBody = await res.text();
-    if (!rawBody || rawBody.trim() === "") {
-      if (res.ok) {
-        return json({ success: true, status: res.status, path: params.path });
-      }
-      return json({
-        error: `API returned ${res.status} ${res.statusText}`,
-        status: res.status,
-        path: params.path,
-      });
-    }
-
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(rawBody);
-    } catch {
-      parsed = rawBody;
-    }
+      debugLog(`[qqbot-channel-api] <<< Status: ${res.status} ${res.statusText}`);
 
-    if (!res.ok) {
-      const errMsg =
-        typeof parsed === "object" && parsed && "message" in parsed
-          ? String((parsed as { message?: unknown }).message)
-          : `${res.status} ${res.statusText}`;
-      debugError(`[qqbot-channel-api] Error [${method} ${params.path}]: ${errMsg}`);
+      const rawBody = res.ok
+        ? await res.text()
+        : await readResponseTextLimited(res, CHANNEL_API_ERROR_BODY_LIMIT_BYTES);
+      if (!rawBody || rawBody.trim() === "") {
+        if (res.ok) {
+          return json({ success: true, status: res.status, path: params.path });
+        }
+        return json({
+          error: `API returned ${res.status} ${res.statusText}`,
+          status: res.status,
+          path: params.path,
+        });
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawBody);
+      } catch {
+        parsed = rawBody;
+      }
+
+      if (!res.ok) {
+        const errMsg =
+          typeof parsed === "object" && parsed && "message" in parsed
+            ? String((parsed as { message?: unknown }).message)
+            : `${res.status} ${res.statusText}`;
+        debugError(`[qqbot-channel-api] Error [${method} ${params.path}]: ${errMsg}`);
+        return json({
+          error: errMsg,
+          status: res.status,
+          path: params.path,
+          details: parsed,
+        });
+      }
+
       return json({
-        error: errMsg,
+        success: true,
         status: res.status,
         path: params.path,
-        details: parsed,
+        data: parsed,
       });
+    } finally {
+      await release?.();
     }
-
-    return json({
-      success: true,
-      status: res.status,
-      path: params.path,
-      data: parsed,
-    });
   } catch (err) {
     return json({
       error: formatErrorMessage(err),

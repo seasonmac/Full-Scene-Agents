@@ -179,19 +179,6 @@ export class StreamUIAdapter {
         }
       }
 
-      // plan_confirm 可能先于 writing-plans skill 注入到达（02 文档 §4.3）
-      if (phase === 'clarify' || phase === 'customize') {
-        const plan = FlowParsers.parsePlanConfirm(text);
-        if (plan) {
-          if (phase === 'clarify') {
-            phase = 'customize';
-          }
-          plan.phase = phase;
-          blocks.push(plan);
-          continue;
-        }
-      }
-
       if (phase === 'create' || phase === 'execute') {
         const summary = FlowParsers.parseExecSummary(text);
         if (summary) {

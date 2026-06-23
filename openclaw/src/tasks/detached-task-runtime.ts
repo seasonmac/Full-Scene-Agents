@@ -1,7 +1,9 @@
+// Provides the runtime adapter for detached task execution.
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type {
   DetachedTaskRecoveryAttemptParams,
   DetachedTaskRecoveryAttemptResult,
+  DetachedTaskFinalizeParams,
   DetachedTaskLifecycleRuntime,
   DetachedTaskLifecycleRuntimeRegistration,
 } from "./detached-task-runtime-contract.js";
@@ -17,21 +19,25 @@ import {
   createQueuedTaskRun as createQueuedTaskRunFromExecutor,
   createRunningTaskRun as createRunningTaskRunFromExecutor,
   failTaskRunByRunId as failTaskRunByRunIdFromExecutor,
+  finalizeTaskRunByRunId as finalizeTaskRunByRunIdFromExecutor,
   recordTaskRunProgressByRunId as recordTaskRunProgressByRunIdFromExecutor,
   setDetachedTaskDeliveryStatusByRunId as setDetachedTaskDeliveryStatusByRunIdFromExecutor,
   startTaskRunByRunId as startTaskRunByRunIdFromExecutor,
 } from "./task-executor.js";
+import type { TaskRecord } from "./task-registry.types.js";
 
 const log = createSubsystemLogger("tasks/detached-runtime");
 const DETACHED_TASK_RECOVERY_WARN_MS = 5_000;
 
 export type { DetachedTaskLifecycleRuntime, DetachedTaskLifecycleRuntimeRegistration };
 
+// Default runtime keeps detached task APIs usable before plugins install custom lifecycle hooks.
 const DEFAULT_DETACHED_TASK_LIFECYCLE_RUNTIME: DetachedTaskLifecycleRuntime = {
   createQueuedTaskRun: createQueuedTaskRunFromExecutor,
   createRunningTaskRun: createRunningTaskRunFromExecutor,
   startTaskRunByRunId: startTaskRunByRunIdFromExecutor,
   recordTaskRunProgressByRunId: recordTaskRunProgressByRunIdFromExecutor,
+  finalizeTaskRunByRunId: finalizeTaskRunByRunIdFromExecutor,
   completeTaskRunByRunId: completeTaskRunByRunIdFromExecutor,
   failTaskRunByRunId: failTaskRunByRunIdFromExecutor,
   setDetachedTaskDeliveryStatusByRunId: setDetachedTaskDeliveryStatusByRunIdFromExecutor,
@@ -87,6 +93,20 @@ export function recordTaskRunProgressByRunId(
   return getDetachedTaskLifecycleRuntime().recordTaskRunProgressByRunId(...args);
 }
 
+export function finalizeTaskRunByRunId(params: DetachedTaskFinalizeParams): TaskRecord[] {
+  const runtime = getDetachedTaskLifecycleRuntime();
+  if (runtime.finalizeTaskRunByRunId) {
+    return runtime.finalizeTaskRunByRunId(params);
+  }
+  if (params.status === "succeeded") {
+    return runtime.completeTaskRunByRunId(params);
+  }
+  return runtime.failTaskRunByRunId({
+    ...params,
+    status: params.status,
+  });
+}
+
 export function completeTaskRunByRunId(
   ...args: Parameters<DetachedTaskLifecycleRuntime["completeTaskRunByRunId"]>
 ): ReturnType<DetachedTaskLifecycleRuntime["completeTaskRunByRunId"]> {
@@ -120,6 +140,7 @@ export async function tryRecoverTaskBeforeMarkLost(
   }
   const startedAt = Date.now();
   try {
+    // Recovery hooks are best-effort; invalid/slow/failing hooks must not block mark-lost cleanup.
     const result = await hook(params);
     const elapsedMs = Date.now() - startedAt;
     if (elapsedMs >= DETACHED_TASK_RECOVERY_WARN_MS) {

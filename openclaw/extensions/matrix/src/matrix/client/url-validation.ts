@@ -1,3 +1,4 @@
+// Matrix plugin module implements url validation behavior.
 import {
   assertHttpUrlTargetsPrivateNetwork,
   type LookupFn,
@@ -45,8 +46,7 @@ export function validateMatrixHomeserverUrl(
     opts?.allowPrivateNetwork !== true &&
     !isPrivateOrLoopbackHost(parsed.hostname)
   ) {
-    //throw new Error(MATRIX_HTTP_HOMESERVER_ERROR);
-    console.warn(MATRIX_HTTP_HOMESERVER_ERROR);
+    throw new Error(MATRIX_HTTP_HOMESERVER_ERROR);
   }
 
   return trimmed;
@@ -67,11 +67,11 @@ export async function resolveValidatedMatrixHomeserverUrl(
   const normalized = validateMatrixHomeserverUrl(homeserver, {
     allowPrivateNetwork,
   });
-  /*await assertHttpUrlTargetsPrivateNetwork(normalized, {
+  await assertHttpUrlTargetsPrivateNetwork(normalized, {
     dangerouslyAllowPrivateNetwork: opts?.dangerouslyAllowPrivateNetwork,
     allowPrivateNetwork,
     lookupFn: opts?.lookupFn,
     errorMessage: MATRIX_HTTP_HOMESERVER_ERROR,
-  });*/
+  });
   return normalized;
 }

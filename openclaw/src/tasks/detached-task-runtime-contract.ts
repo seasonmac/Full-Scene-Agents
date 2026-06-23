@@ -1,3 +1,4 @@
+// Defines the detached task runtime contract and spawn options.
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   TaskDeliveryState,
@@ -22,6 +23,7 @@ export type DetachedTaskCreateParams = {
   childSessionKey?: string;
   parentTaskId?: string;
   agentId?: string;
+  requesterAgentId?: string;
   runId?: string;
   label?: string;
   task: string;
@@ -78,16 +80,31 @@ export type DetachedTaskFailParams = {
   terminalSummary?: string | null;
 };
 
+export type DetachedTaskFinalizeParams = {
+  runId: string;
+  runtime?: TaskRuntime;
+  sessionKey?: string;
+  status: Extract<TaskStatus, "succeeded" | "failed" | "timed_out" | "cancelled">;
+  endedAt: number;
+  lastEventAt?: number;
+  error?: string;
+  progressSummary?: string | null;
+  terminalSummary?: string | null;
+  terminalOutcome?: TaskTerminalOutcome | null;
+};
+
 export type DetachedTaskDeliveryStatusParams = {
   runId: string;
   runtime?: TaskRuntime;
   sessionKey?: string;
   deliveryStatus: TaskDeliveryStatus;
+  error?: string;
 };
 
 export type DetachedTaskCancelParams = {
   cfg: OpenClawConfig;
   taskId: string;
+  reason?: string;
 };
 
 export type DetachedTaskCancelResult = {
@@ -109,10 +126,11 @@ export type DetachedTaskRecoveryAttemptResult = {
 };
 
 export type DetachedTaskLifecycleRuntime = {
-  createQueuedTaskRun: (params: DetachedTaskCreateParams) => TaskRecord;
-  createRunningTaskRun: (params: DetachedRunningTaskCreateParams) => TaskRecord;
+  createQueuedTaskRun: (params: DetachedTaskCreateParams) => TaskRecord | null;
+  createRunningTaskRun: (params: DetachedRunningTaskCreateParams) => TaskRecord | null;
   startTaskRunByRunId: (params: DetachedTaskStartParams) => TaskRecord[];
   recordTaskRunProgressByRunId: (params: DetachedTaskProgressParams) => TaskRecord[];
+  finalizeTaskRunByRunId?: (params: DetachedTaskFinalizeParams) => TaskRecord[];
   completeTaskRunByRunId: (params: DetachedTaskCompleteParams) => TaskRecord[];
   failTaskRunByRunId: (params: DetachedTaskFailParams) => TaskRecord[];
   setDetachedTaskDeliveryStatusByRunId: (params: DetachedTaskDeliveryStatusParams) => TaskRecord[];

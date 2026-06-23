@@ -1,5 +1,5 @@
 /**
- * A2UI message models — subset of A2UI 0.9 server→client used by intentx.app:cards@1.
+ * A2UI message models — subset of A2UI 0.9 server→client used by genskill.cards@1.
  * Inline transport: the agent emits A2UI JSON line(s) inside the chat text stream
  * (fenced ```a2ui block or bare JSONL); the client parses, validates, and maps
  * them to the prebuilt UIBlock cards. No A2UI standard components are used.
@@ -8,7 +8,8 @@
  * Catalog: docs/a2ui/intentx-cards-catalog@1.json
  */
 
-export const A2UI_CATALOG_ID: string = 'intentx.app:cards@1';
+export const A2UI_CATALOG_ID: string = 'genskill.cards@1';
+export const A2UI_CARD_CAPABILITY: string = 'a2ui:' + A2UI_CATALOG_ID;
 
 /** The 6 custom component names = the only legal `component` values. */
 export const A2UI_COMPONENTS: string[] = [

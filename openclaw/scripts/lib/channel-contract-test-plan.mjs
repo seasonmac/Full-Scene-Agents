@@ -1,15 +1,9 @@
-import { existsSync, readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+// Builds balanced Vitest shard plans for channel plugin contract tests.
+import { relative } from "node:path";
+import { listTrackedTestFiles } from "./list-test-files.mjs";
 
 function listContractTestFiles(rootDir = "src/channels/plugins/contracts") {
-  if (!existsSync(rootDir)) {
-    return [];
-  }
-
-  return readdirSync(rootDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".test.ts"))
-    .map((entry) => join(rootDir, entry.name).replaceAll("\\", "/"))
-    .toSorted((a, b) => a.localeCompare(b));
+  return listTrackedTestFiles(rootDir);
 }
 
 const CONTRACT_FILE_WEIGHTS = new Map([
@@ -17,19 +11,19 @@ const CONTRACT_FILE_WEIGHTS = new Map([
   ["outbound-payload.contract.test.ts", 18],
   ["plugins-core.catalog.paths.contract.test.ts", 28],
   ["plugins-core.catalog.entries.contract.test.ts", 16],
-  ["session-binding.registry-backed.contract.test.ts", 16],
+  ["session-binding.registry-backed.contract.test.ts", 40],
 ]);
 
 function resolveContractFileWeight(file) {
   const name = file.replaceAll("\\", "/").split("/").pop();
   if (name.startsWith("plugin.registry-backed-shard-")) {
-    return 40;
+    return 48;
   }
   if (name.startsWith("surfaces-only.registry-backed-shard-")) {
     return 40;
   }
   if (name.startsWith("directory.registry-backed-shard-")) {
-    return 24;
+    return 36;
   }
   if (name.startsWith("threading.registry-backed-shard-")) {
     return 18;
@@ -37,18 +31,14 @@ function resolveContractFileWeight(file) {
   return CONTRACT_FILE_WEIGHTS.get(name) ?? 8;
 }
 
+/** Create balanced channel contract test shards for CI check planning. */
 export function createChannelContractTestShards() {
   const rootDir = "src/channels/plugins/contracts";
-  const suffixes = ["a", "b", "c"];
+  const suffixes = ["a", "b"];
   const groups = Object.fromEntries(
-    ["registry", "core"].flatMap((family) =>
-      suffixes.map((suffix) => [`checks-fast-contracts-channels-${family}-${suffix}`, []]),
-    ),
+    suffixes.map((suffix) => [`checks-fast-contracts-channels-${suffix}`, []]),
   );
-  const groupKeys = {
-    core: suffixes.map((suffix) => `checks-fast-contracts-channels-core-${suffix}`),
-    registry: suffixes.map((suffix) => `checks-fast-contracts-channels-registry-${suffix}`),
-  };
+  const groupKeys = suffixes.map((suffix) => `checks-fast-contracts-channels-${suffix}`);
   const weights = Object.fromEntries(Object.keys(groups).map((key) => [key, 0]));
   const pushBalanced = (keys, file) => {
     const target = keys.toSorted((a, b) => weights[a] - weights[b] || a.localeCompare(b))[0];
@@ -71,10 +61,10 @@ export function createChannelContractTestShards() {
     return delta === 0 ? left.localeCompare(right) : delta;
   };
   for (const file of registryFiles.toSorted(byDescendingWeight)) {
-    pushBalanced(groupKeys.registry, file);
+    pushBalanced(groupKeys, file);
   }
   for (const file of coreFiles.toSorted(byDescendingWeight)) {
-    pushBalanced(groupKeys.core, file);
+    pushBalanced(groupKeys, file);
   }
 
   return Object.entries(groups).map(([checkName, includePatterns]) => ({

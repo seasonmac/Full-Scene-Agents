@@ -1,11 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { isLiveTestEnabled } from "../../src/agents/live-test-helpers.js";
+// Deepgram tests cover audio plugin behavior.
 import {
-  normalizeTranscriptForMatch,
-  streamAudioForLiveTest,
+  runRealtimeSttLiveTest,
   synthesizeElevenLabsLiveSpeech,
-  waitForLiveExpectation,
-} from "../../test/helpers/stt-live-audio.js";
+} from "openclaw/plugin-sdk/provider-test-contracts";
+import { isLiveTestEnabled } from "openclaw/plugin-sdk/test-env";
+import { describe, expect, it } from "vitest";
 import { transcribeDeepgramAudio } from "./audio.js";
 import { buildDeepgramRealtimeTranscriptionProvider } from "./realtime-transcription-provider.js";
 
@@ -62,37 +61,16 @@ describeLive("deepgram live", () => {
       outputFormat: "ulaw_8000",
       timeoutMs: 30_000,
     });
-    const transcripts: string[] = [];
-    const partials: string[] = [];
-    const errors: Error[] = [];
-    const session = provider.createSession({
+    expect(speech.byteLength).toBeGreaterThan(0);
+
+    await runRealtimeSttLiveTest({
+      provider,
       providerConfig: {
         apiKey: DEEPGRAM_KEY,
         language: "en-US",
         endpointingMs: 500,
       },
-      onPartial: (partial) => partials.push(partial),
-      onTranscript: (transcript) => transcripts.push(transcript),
-      onError: (error) => errors.push(error),
+      audio: Buffer.concat([Buffer.alloc(4000, 0xff), speech, Buffer.alloc(8000, 0xff)]),
     });
-
-    try {
-      await session.connect();
-      await streamAudioForLiveTest({
-        audio: Buffer.concat([Buffer.alloc(4000, 0xff), speech, Buffer.alloc(8000, 0xff)]),
-        sendAudio: (chunk) => session.sendAudio(chunk),
-      });
-
-      await waitForLiveExpectation(() => {
-        if (errors[0]) {
-          throw errors[0];
-        }
-        expect(normalizeTranscriptForMatch(transcripts.join(" "))).toContain("openclaw");
-      }, 60_000);
-    } finally {
-      session.close();
-    }
-
-    expect(partials.length + transcripts.length).toBeGreaterThan(0);
   }, 90_000);
 });

@@ -1,5 +1,8 @@
+// Daemon program argument tests cover CLI argument construction for services.
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetWindowsInstallRootsForTests } from "../infra/windows-install-roots.js";
+import { withMockedWindowsPlatform } from "../test-utils/vitest-spies.js";
 
 const childProcessMocks = vi.hoisted(() => ({
   execFileSync: vi.fn(),
@@ -8,6 +11,7 @@ const childProcessMocks = vi.hoisted(() => ({
 const fsMocks = vi.hoisted(() => ({
   access: vi.fn(),
   realpath: vi.fn(),
+  stat: vi.fn(),
 }));
 
 vi.mock("node:fs/promises", async () => {
@@ -18,9 +22,11 @@ vi.mock("node:fs/promises", async () => {
       ...actual,
       access: fsMocks.access,
       realpath: fsMocks.realpath,
+      stat: fsMocks.stat,
     },
     access: fsMocks.access,
     realpath: fsMocks.realpath,
+    stat: fsMocks.stat,
   };
 });
 
@@ -39,6 +45,8 @@ const originalArgv = [...process.argv];
 afterEach(() => {
   process.argv = [...originalArgv];
   vi.resetAllMocks();
+  vi.unstubAllEnvs();
+  resetWindowsInstallRootsForTests();
 });
 
 describe("resolveGatewayProgramArguments", () => {
@@ -70,7 +78,6 @@ describe("resolveGatewayProgramArguments", () => {
       if (target === indexPath || target === indexMjsPath) {
         throw new Error("missing");
       }
-      return;
     });
 
     const result = await resolveGatewayProgramArguments({ port: 18789 });
@@ -174,5 +181,65 @@ describe("resolveGatewayProgramArguments", () => {
       "18789",
     ]);
     expect(result.workingDirectory).toBe(path.resolve("/repo"));
+  });
+
+  it("uses trusted Windows where.exe when resolving dev runtime binaries", async () => {
+    const repoIndexPath = path.resolve("/repo/src/index.ts");
+    const repoEntryPath = path.resolve("/repo/src/entry.ts");
+    process.argv = [String.raw`D:\nodejs\node.exe`, repoIndexPath];
+    vi.stubEnv("SystemRoot", String.raw`D:\Windows`);
+    resetWindowsInstallRootsForTests({ queryRegistryValue: () => null });
+    fsMocks.realpath.mockResolvedValue(repoIndexPath);
+    fsMocks.access.mockResolvedValue(undefined);
+    childProcessMocks.execFileSync.mockReturnValue(String.raw`D:\Tools\bun.exe` + "\r\n");
+
+    let result: Awaited<ReturnType<typeof resolveGatewayProgramArguments>> | undefined;
+    await withMockedWindowsPlatform(async () => {
+      result = await resolveGatewayProgramArguments({
+        dev: true,
+        port: 18789,
+        runtime: "bun",
+      });
+    });
+
+    expect(childProcessMocks.execFileSync).toHaveBeenCalledWith(
+      path.win32.join(String.raw`D:\Windows`, "System32", "where.exe"),
+      ["bun"],
+      { encoding: "utf8" },
+    );
+    expect(result?.programArguments).toEqual([
+      String.raw`D:\Tools\bun.exe`,
+      repoEntryPath,
+      "gateway",
+      "--port",
+      "18789",
+    ]);
+  });
+
+  it("uses an executable wrapper when provided", async () => {
+    const wrapperPath = path.resolve("/usr/local/bin/openclaw-doppler");
+    fsMocks.stat.mockResolvedValue({ isFile: () => true } as never);
+    fsMocks.access.mockResolvedValue(undefined);
+
+    const result = await resolveGatewayProgramArguments({
+      port: 18789,
+      wrapperPath,
+    });
+
+    expect(result.programArguments).toEqual([wrapperPath, "gateway", "--port", "18789"]);
+    expect(result.workingDirectory).toBeUndefined();
+  });
+
+  it("rejects a non-executable wrapper file", async () => {
+    const wrapperPath = path.resolve("/usr/local/bin/openclaw-doppler");
+    fsMocks.stat.mockResolvedValue({ isFile: () => true } as never);
+    fsMocks.access.mockRejectedValue(new Error("EACCES"));
+
+    await expect(
+      resolveGatewayProgramArguments({
+        port: 18789,
+        wrapperPath,
+      }),
+    ).rejects.toThrow("OPENCLAW_WRAPPER must point to an executable file");
   });
 });

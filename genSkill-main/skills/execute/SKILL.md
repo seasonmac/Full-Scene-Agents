@@ -104,6 +104,15 @@ Show the output to the user and ask:
 - If it's a minor tweak to the output: adjust and re-present
 - If it's a fundamental change to the workflow: explain "这个改动需要修改保存的做法本身，要重新编辑吗？" and offer to restart from `genSkill:writing-plans`
 
+> **Structured UI (optional).** If trusted inbound metadata says the client
+> supports capability `a2ui:genskill.cards@1` or catalog `genskill.cards@1`,
+> present this closing summary as an `ExecuteSummary` card **instead of** prose —
+> read `../genSkill/references/a2ui-emit-guide.md` for the fields (`skillPaths` =
+> the created SKILL.md path(s); `usageSteps` = how the user invokes it from now on;
+> `cta` = the closing call-to-action; optional `intro`). If the client does not
+> advertise that capability, keep the plain-text form above. Same content — only
+> the rendering changes.
+
 ## Exit Condition
 
 One of:

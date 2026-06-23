@@ -1,7 +1,8 @@
+// Diagnostic support export helpers write support bundles to disk.
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import JSZip from "jszip";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { parseConfigJson5 } from "../config/io.js";
 import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import { redactConfigObject } from "../config/redact-snapshot.js";
@@ -12,6 +13,15 @@ import {
   readLatestDiagnosticStabilityBundleSync,
   type ReadDiagnosticStabilityBundleResult,
 } from "./diagnostic-stability-bundle.js";
+import {
+  jsonSupportBundleFile,
+  jsonlSupportBundleFile,
+  supportBundleContents,
+  textSupportBundleFile,
+  writeSupportBundleZip,
+  type DiagnosticSupportBundleContent,
+  type DiagnosticSupportBundleFile,
+} from "./diagnostic-support-bundle.js";
 import { sanitizeSupportLogRecord } from "./diagnostic-support-log-redaction.js";
 import {
   redactPathForSupport,
@@ -32,7 +42,7 @@ const SUPPORT_EXPORT_SUFFIX = ".zip";
 type Awaitable<T> = T | Promise<T>;
 type SupportSnapshotReader = () => Awaitable<unknown>;
 
-export type DiagnosticSupportExportOptions = {
+type DiagnosticSupportExportOptions = {
   outputPath?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -46,7 +56,7 @@ export type DiagnosticSupportExportOptions = {
   readHealthSnapshot?: SupportSnapshotReader;
 };
 
-export type DiagnosticSupportExportManifest = {
+type DiagnosticSupportExportManifest = {
   version: typeof DIAGNOSTIC_SUPPORT_EXPORT_VERSION;
   generatedAt: string;
   openclawVersion: string;
@@ -54,11 +64,7 @@ export type DiagnosticSupportExportManifest = {
   arch: string;
   node: string;
   stateDir: string;
-  contents: Array<{
-    path: string;
-    mediaType: string;
-    bytes: number;
-  }>;
+  contents: DiagnosticSupportBundleContent[];
   privacy: {
     payloadFree: true;
     rawLogsIncluded: false;
@@ -66,13 +72,9 @@ export type DiagnosticSupportExportManifest = {
   };
 };
 
-export type DiagnosticSupportExportFile = {
-  path: string;
-  mediaType: string;
-  content: string;
-};
+type DiagnosticSupportExportFile = DiagnosticSupportBundleFile;
 
-export type DiagnosticSupportExportArtifact = {
+type DiagnosticSupportExportArtifact = {
   manifest: DiagnosticSupportExportManifest;
   files: DiagnosticSupportExportFile[];
 };
@@ -97,6 +99,10 @@ type ConfigShape = {
     port?: unknown;
     authMode?: unknown;
     tailscale?: unknown;
+  };
+  discovery?: {
+    mdnsMode?: unknown;
+    bonjourEnvOverride: "unset" | "force-enabled" | "force-disabled" | "unrecognized";
   };
   channels?: {
     count: number;
@@ -134,6 +140,21 @@ type FailedSanitizedLogTail = Omit<IncludedSanitizedLogTail, "status"> & {
 
 type SanitizedLogTail = IncludedSanitizedLogTail | FailedSanitizedLogTail;
 
+type BonjourLogSummary = {
+  count: number;
+  warnings: number;
+  last?: {
+    time?: string;
+    level?: string;
+    kind: "disabled" | "restarted" | "ciao_suppressed" | "conflict" | "watchdog" | "other";
+  };
+  flags: {
+    disabled: boolean;
+    restarted: boolean;
+    ciaoSuppressed: boolean;
+  };
+};
+
 type SupportSnapshotStatus =
   | {
       status: "included";
@@ -157,39 +178,12 @@ function formatExportTimestamp(now: Date): string {
   return now.toISOString().replace(/[:.]/g, "-");
 }
 
-function byteLength(content: string): number {
-  return Buffer.byteLength(content, "utf8");
-}
-
-function jsonFile(pathName: string, value: unknown): DiagnosticSupportExportFile {
-  return {
-    path: pathName,
-    mediaType: "application/json",
-    content: `${JSON.stringify(value, null, 2)}\n`,
-  };
-}
-
-function textFile(pathName: string, content: string): DiagnosticSupportExportFile {
-  return {
-    path: pathName,
-    mediaType: "text/plain; charset=utf-8",
-    content: content.endsWith("\n") ? content : `${content}\n`,
-  };
-}
-
 function normalizePositiveInteger(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) {
     return fallback;
   }
   return Math.floor(parsed);
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
 }
 
 function safeScalar(value: unknown): unknown {
@@ -206,16 +200,46 @@ function safeScalar(value: unknown): unknown {
   return undefined;
 }
 
-function sortedObjectKeys(value: unknown): string[] {
-  return Object.keys(asRecord(value) ?? {}).toSorted((a, b) => a.localeCompare(b));
+function resolveBonjourEnvOverride(
+  env: NodeJS.ProcessEnv,
+): NonNullable<ConfigShape["discovery"]>["bonjourEnvOverride"] {
+  const raw = env.OPENCLAW_DISABLE_BONJOUR?.trim().toLowerCase();
+  if (!raw) {
+    return "unset";
+  }
+  switch (raw) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return "force-disabled";
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return "force-enabled";
+    default:
+      return "unrecognized";
+  }
 }
 
-function sanitizeConfigShape(parsed: unknown, configPath: string, stat: fs.Stats): ConfigShape {
-  const root = asRecord(parsed) ?? {};
-  const gateway = asRecord(root.gateway);
-  const auth = asRecord(gateway?.auth);
-  const channels = asRecord(root.channels);
-  const plugins = asRecord(root.plugins);
+function sortedObjectKeys(value: unknown): string[] {
+  return Object.keys(asOptionalRecord(value) ?? {}).toSorted((a, b) => a.localeCompare(b));
+}
+
+function sanitizeConfigShape(
+  parsed: unknown,
+  configPath: string,
+  stat: fs.Stats,
+  env: NodeJS.ProcessEnv,
+): ConfigShape {
+  const root = asOptionalRecord(parsed) ?? {};
+  const gateway = asOptionalRecord(root.gateway);
+  const auth = asOptionalRecord(gateway?.auth);
+  const discovery = asOptionalRecord(root.discovery);
+  const mdns = asOptionalRecord(discovery?.mdns);
+  const channels = asOptionalRecord(root.channels);
+  const plugins = asOptionalRecord(root.plugins);
   const agents = Array.isArray(root.agents) ? root.agents : undefined;
 
   const shape: ConfigShape = {
@@ -234,6 +258,14 @@ function sanitizeConfigShape(parsed: unknown, configPath: string, stat: fs.Stats
       port: safeScalar(gateway.port),
       authMode: safeScalar(auth?.mode),
       tailscale: safeScalar(gateway.tailscale),
+    };
+  }
+
+  const bonjourEnvOverride = resolveBonjourEnvOverride(env);
+  if (mdns || bonjourEnvOverride !== "unset") {
+    shape.discovery = {
+      mdnsMode: safeScalar(mdns?.mode),
+      bonjourEnvOverride,
     };
   }
 
@@ -319,7 +351,7 @@ function readConfigExport(options: {
       };
     }
     return {
-      shape: sanitizeConfigShape(parsed.parsed, redactedConfigPath, stat),
+      shape: sanitizeConfigShape(parsed.parsed, redactedConfigPath, stat, options.env),
       sanitized: sanitizeConfigDetails(parsed.parsed, options),
     };
   } catch (error) {
@@ -354,7 +386,7 @@ async function collectSupportSnapshot(params: {
         status: "included",
         path: params.path,
       },
-      file: jsonFile(params.path, {
+      file: jsonSupportBundleFile(params.path, {
         status: "ok",
         capturedAt: params.generatedAt,
         data: sanitizeSupportSnapshotValue(data, params.redaction),
@@ -368,7 +400,7 @@ async function collectSupportSnapshot(params: {
         path: params.path,
         error: redactedError,
       },
-      file: jsonFile(params.path, {
+      file: jsonSupportBundleFile(params.path, {
         status: "failed",
         capturedAt: params.generatedAt,
         error: redactedError,
@@ -421,6 +453,73 @@ function failedLogTail(error: unknown, redaction: SupportRedactionContext): Sani
       },
     ],
   };
+}
+
+function logString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function isBonjourLogRecord(record: Record<string, unknown>): boolean {
+  const sourceFields = ["subsystem", "logger", "module", "pluginId", "component"];
+  if (sourceFields.some((field) => logString(record, field)?.toLowerCase().includes("bonjour"))) {
+    return true;
+  }
+  return logString(record, "msg")?.toLowerCase().startsWith("bonjour:") === true;
+}
+
+function classifyBonjourLogKind(
+  normalizedMsg: string,
+): NonNullable<BonjourLogSummary["last"]>["kind"] {
+  if (normalizedMsg.includes("disabling")) {
+    return "disabled";
+  }
+  if (normalizedMsg.includes("restarting")) {
+    return "restarted";
+  }
+  if (normalizedMsg.includes("suppressing ciao")) {
+    return "ciao_suppressed";
+  }
+  if (normalizedMsg.includes("conflict")) {
+    return "conflict";
+  }
+  if (normalizedMsg.includes("watchdog")) {
+    return "watchdog";
+  }
+  return "other";
+}
+
+function summarizeBonjourLogs(logTail: SanitizedLogTail): BonjourLogSummary {
+  const summary: BonjourLogSummary = {
+    count: 0,
+    warnings: 0,
+    flags: {
+      disabled: false,
+      restarted: false,
+      ciaoSuppressed: false,
+    },
+  };
+  for (const record of logTail.lines) {
+    if (!isBonjourLogRecord(record)) {
+      continue;
+    }
+    summary.count += 1;
+    const level = logString(record, "level")?.toLowerCase();
+    if (level === "warn" || level === "error") {
+      summary.warnings += 1;
+    }
+    const msg = logString(record, "msg");
+    const normalizedMsg = msg?.toLowerCase() ?? "";
+    summary.flags.disabled ||= normalizedMsg.includes("disabling");
+    summary.flags.restarted ||= normalizedMsg.includes("restarting");
+    summary.flags.ciaoSuppressed ||= normalizedMsg.includes("suppressing ciao");
+    summary.last = {
+      ...(logString(record, "time") ? { time: logString(record, "time") } : {}),
+      ...(logString(record, "level") ? { level: logString(record, "level") } : {}),
+      kind: classifyBonjourLogKind(normalizedMsg),
+    };
+  }
+  return summary;
 }
 
 async function collectSupportLogTail(params: {
@@ -518,7 +617,7 @@ function renderSummary(params: {
     "## Maintainer Quick Read",
     "",
     "- `manifest.json`: file inventory and privacy notes",
-    "- `diagnostics.json`: top-level summary of config, logs, stability, status, and health",
+    "- `diagnostics.json`: top-level summary of config, logs, Bonjour/mDNS, stability, status, and health",
     "- `config/sanitized.json`: config values with credentials, private identifiers, and prompt text redacted",
     "- `status/gateway-status.json`: sanitized service/connectivity snapshot",
     "- `health/gateway-health.json`: sanitized Gateway health snapshot",
@@ -622,18 +721,18 @@ export async function buildDiagnosticSupportExport(
       reset: logTail.reset,
     },
     stability: describeStabilityForDiagnostics(stability, redaction),
+    bonjour: summarizeBonjourLogs(logTail),
     status: statusSnapshot.summary,
     health: healthSnapshot.summary,
   };
   const files: DiagnosticSupportExportFile[] = [
-    jsonFile("diagnostics.json", diagnostics),
-    jsonFile("config/shape.json", config.shape),
-    jsonFile("config/sanitized.json", config.sanitized ?? null),
-    {
-      path: "logs/openclaw-sanitized.jsonl",
-      mediaType: "application/x-ndjson",
-      content: logTail.lines.map((line) => JSON.stringify(line)).join("\n") + "\n",
-    },
+    jsonSupportBundleFile("diagnostics.json", diagnostics),
+    jsonSupportBundleFile("config/shape.json", config.shape),
+    jsonSupportBundleFile("config/sanitized.json", config.sanitized ?? null),
+    jsonlSupportBundleFile(
+      "logs/openclaw-sanitized.jsonl",
+      logTail.lines.map((line) => JSON.stringify(line)),
+    ),
   ];
   for (const snapshot of [statusSnapshot, healthSnapshot]) {
     if (snapshot.file) {
@@ -642,11 +741,11 @@ export async function buildDiagnosticSupportExport(
   }
 
   if (stability.status === "found") {
-    files.push(jsonFile("stability/latest.json", stability.bundle));
+    files.push(jsonSupportBundleFile("stability/latest.json", stability.bundle));
   }
 
   files.push(
-    textFile(
+    textSupportBundleFile(
       "summary.md",
       renderSummary({
         generatedAt,
@@ -667,11 +766,7 @@ export async function buildDiagnosticSupportExport(
     arch: process.arch,
     node: process.versions.node,
     stateDir: redactPathForSupport(stateDir, redaction),
-    contents: files.map((file) => ({
-      path: file.path,
-      mediaType: file.mediaType,
-      bytes: byteLength(file.content),
-    })),
+    contents: supportBundleContents(files),
     privacy: {
       payloadFree: true,
       rawLogsIncluded: false,
@@ -686,7 +781,7 @@ export async function buildDiagnosticSupportExport(
 
   return {
     manifest,
-    files: [jsonFile("manifest.json", manifest), ...files],
+    files: [jsonSupportBundleFile("manifest.json", manifest), ...files],
   };
 }
 
@@ -704,20 +799,14 @@ export async function writeDiagnosticSupportExport(
     now,
   });
   const artifact = await buildDiagnosticSupportExport({ ...options, env, stateDir, now });
-  const zip = new JSZip();
-  for (const file of artifact.files) {
-    zip.file(file.path, file.content);
-  }
-  const buffer = await zip.generateAsync({
-    type: "nodebuffer",
-    compression: "DEFLATE",
-    compressionOptions: { level: 6 },
+  const bytes = await writeSupportBundleZip({
+    outputPath,
+    files: artifact.files,
+    compressionLevel: 6,
   });
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(outputPath, buffer, { mode: 0o600 });
   return {
     path: outputPath,
-    bytes: buffer.length,
+    bytes,
     manifest: artifact.manifest,
   };
 }

@@ -152,6 +152,15 @@ If `skipped[]` is non-empty, reflect the dropped part honestly in line 6.
 - Mention the `orchestration_path`.
 - Proceed to `genSkill:execute`.
 
+> **Structured UI (optional).** If trusted inbound metadata says the client
+> supports capability `a2ui:genskill.cards@1` or catalog `genskill.cards@1`,
+> report this file-write progress as a `SkillCreate` card **instead of** a prose
+> list — read `../genSkill/references/a2ui-emit-guide.md` for the fields (one
+> `steps[]` entry per written file, `status:"done"`, `label:"写入 <最后两段路径>"`;
+> failures as `status:"error"` with the raw output in `detail`; dropped sub-skills
+> as `annotations[]`). If the client does not advertise that capability, keep the
+> plain-text report above. Same content — only the rendering changes.
+
 ## Authoring Quality Bar
 
 These are the judgment calls that make a generated skill actually usable. The script can't make them — you must. The full craft (with a worked example) is in `../genSkill/references/authoring-good-skills.md`; the essentials:

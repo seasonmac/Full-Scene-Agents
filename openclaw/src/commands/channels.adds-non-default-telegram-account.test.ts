@@ -1,3 +1,4 @@
+// Channels account tests cover non-default Telegram account setup, status, removal, and binding behavior.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPatchedAccountSetupAdapter } from "../channels/plugins/setup-helpers.js";
 import type { ChannelStatusIssue } from "../channels/plugins/types.core.js";
@@ -15,10 +16,15 @@ import { baseConfigSnapshot, createTestRuntime } from "./test-runtime-config-hel
 const runtime = createTestRuntime();
 let minimalChannelsCommandRegistry: ReturnType<typeof createTestRegistry>;
 const createClackPrompterMock = vi.hoisted(() => vi.fn());
+const catalogMocks = vi.hoisted(() => ({
+  listTrustedChannelPluginCatalogEntries: vi.fn(() => []),
+}));
 
 vi.mock("../wizard/clack-prompter.js", () => ({
   createClackPrompter: createClackPrompterMock,
 }));
+
+vi.mock("./channel-setup/trusted-catalog.js", () => catalogMocks);
 
 type ChannelSectionConfig = {
   enabled?: boolean;
@@ -31,7 +37,15 @@ type ChannelSectionConfig = {
 };
 
 function formatChannelStatusJoined(channelAccounts: Record<string, unknown>) {
-  return formatGatewayChannelsStatusLines({ channelAccounts }).join("\n");
+  return formatGatewayChannelsStatusLines({
+    channelLabels: {
+      discord: "Discord",
+      signal: "Signal",
+      telegram: "Telegram",
+      whatsapp: "WhatsApp",
+    },
+    channelAccounts,
+  }).join("\n");
 }
 
 function listConfiguredAccountIds(channelConfig: ChannelSectionConfig | undefined): string[] {
@@ -331,7 +345,11 @@ describe("channels command", () => {
   // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Test helper lets assertions ascribe written config shape.
   function getWrittenConfig<T>(): T {
     expect(configMocks.writeConfigFile).toHaveBeenCalledTimes(1);
-    return configMocks.writeConfigFile.mock.calls[0]?.[0] as T;
+    const [config] = configMocks.writeConfigFile.mock.calls[0] ?? [];
+    if (config === undefined) {
+      throw new Error("expected written channel config");
+    }
+    return config as T;
   }
 
   async function runRemoveWithConfirm(
@@ -443,7 +461,7 @@ describe("channels command", () => {
 
     const next = await addAlertsTelegramAccount("alerts-token");
     expect(next.channels?.telegram?.enabled).toBe(true);
-    expect(next.channels?.telegram?.accounts?.default).toEqual({});
+    expect(next.channels?.telegram?.accounts?.default).toStrictEqual({});
     expect(next.channels?.telegram?.accounts?.alerts?.botToken).toBe("alerts-token");
   });
 
@@ -637,6 +655,10 @@ describe("channels command", () => {
 
   it("formats gateway channel status lines in registry order", () => {
     const lines = formatGatewayChannelsStatusLines({
+      channelLabels: {
+        telegram: "Telegram",
+        whatsapp: "WhatsApp",
+      },
       channelAccounts: {
         telegram: [{ accountId: "default", configured: true }],
         whatsapp: [{ accountId: "default", linked: true }],
@@ -756,6 +778,9 @@ describe("channels command", () => {
 
   it("surfaces WhatsApp auth/runtime hints when unlinked or disconnected", () => {
     const unlinked = formatGatewayChannelsStatusLines({
+      channelLabels: {
+        whatsapp: "WhatsApp",
+      },
       channelAccounts: {
         whatsapp: [{ accountId: "default", enabled: true, linked: false }],
       },
@@ -764,6 +789,9 @@ describe("channels command", () => {
     expect(unlinked.join("\n")).toMatch(/Not linked/i);
 
     const disconnected = formatGatewayChannelsStatusLines({
+      channelLabels: {
+        whatsapp: "WhatsApp",
+      },
       channelAccounts: {
         whatsapp: [
           {

@@ -17,13 +17,30 @@ is needed before the first question, so the conversation starts immediately.
 - If no goal is present, ask exactly: `你想把哪件常做的事保存成以后能直接用的做法？`
 - Keep the conversation in the user's language throughout.
 - Never say "Agent", "Skill", "Planner", "GenSkill", "schema", "runtime", "tool registry", or "frontmatter" to the user.
-- **Structured UI (optional):** if the client advertises support for catalog `intentx.app:cards@1`, read `references/a2ui-emit-guide.md` and emit the structured card for each structured moment (clarify question, approach choice, plan confirm, skill-create progress, execute summary) instead of the prose form. If it does not, behave exactly as written below (plain text). The card carries the same content and sends the same answer back — never change the questioning logic, only its rendering.
+- **Structured UI (optional):** if trusted inbound metadata says the client supports capability `a2ui:genskill.cards@1` or catalog `genskill.cards@1`, emit a structured A2UI card for each structured moment (clarify question, approach choice, plan confirm, skill-create progress, execute summary) instead of the prose form. If it does not, behave exactly as written below (plain text). The card carries the same content and sends the same answer back — never change the questioning logic, only its rendering.
+  - **Only structured moments get a card.** A card is *only* for the five moments above. Greetings, acknowledgments, plain explanations, error/clarification asides, and any other non-structured reply MUST be plain text — never wrap them in an ```a2ui``` block. Emitting a card for a casual turn (e.g. replying to "hello") is a failure: the client validates any A2UI it detects and will reject a malformed or out-of-place card.
 
-**Do not read any reference file to ask the first question.** Goal clarification
+**Do not read any business capability reference file to ask the first question.**
+Goal clarification
 and the first narrowing questions are about the user's own behavior, not system
 capabilities. Only load `references/capabilities-summary.md` when you are about
 to offer **option-based** choices that could touch a disabled capability — see
 "Capability Boundary (lazy)" below. This keeps the first reply fast.
+
+A2UI rendering instructions are the only exception because they define output
+shape, not business capability. When `a2ui:genskill.cards@1` / `genskill.cards@1`
+support is present on the first question, use this minimal shape without loading
+any reference file. The block must be strict JSON: every line must parse with
+`JSON.parse`, and any embedded double quote inside a string value must be escaped
+as `\"` or replaced with Chinese quotation marks:
+
+```a2ui
+{"createSurface":{"surfaceId":"clarify-1","catalogId":"genskill.cards@1"}}
+{"updateComponents":{"surfaceId":"clarify-1","components":[{"id":"root","component":"ClarifyQuestion","phase":"clarify","question":"<one question in the user's language>","options":[{"id":"1","label":"<short option>"},{"id":"2","label":"<short option>"}],"action":{"name":"clarifyAnswer"}}]}}
+```
+
+For later structured moments, read `references/a2ui-emit-guide.md` before
+emitting the next A2UI card.
 
 ## Flow
 
@@ -155,11 +172,12 @@ When all gaps are filled:
 
 ## Capability Boundary (lazy)
 
-You do **not** need any reference file to clarify the goal or to ask trigger /
-input / output / failure questions in the user's own words. Read
-`references/capabilities-summary.md` **only at the moment** you are about to
-present option choices that might include a disabled capability (e.g. anything
-touching payment, sending to other people, auto-reading health/calendar data).
+You do **not** need any business capability reference file to clarify the goal or
+to ask trigger / input / output / failure questions in the user's own words.
+Read `references/capabilities-summary.md` **only at the moment** you are about
+to present option choices that might include a disabled capability (e.g.
+anything touching payment, sending to other people, auto-reading health/calendar
+data).
 
 - **Supported** capabilities may appear as options.
 - **Disabled** capabilities must never appear as an option. If the user asks for one, explain which part is impossible and offer the alternative the summary gives.
@@ -175,7 +193,7 @@ Keep the summary as the single source of truth — do not copy it inline anywher
 | Combining trigger + input (or any two dimensions) in one question | Split into one question per dimension |
 | Asking a question with non-mutually-exclusive options | Reframe so options don't overlap |
 | Showing more than 3 options | Pick the 3 most likely, or ask a narrower question |
-| Reading a reference file before the first question | Ask the goal/trigger/input question directly; load summary only before option choices |
+| Reading a business capability reference file before the first question | Ask the goal/trigger/input question directly; load summary only before option choices |
 | Asking about "schema" / "能力" / "触发条件" | Rephrase in the user's language |
 | Presenting a summary before all gaps are filled | Ask the next narrowing question first |
 | Offering a template question after user free-text input | Build directly on what they said |

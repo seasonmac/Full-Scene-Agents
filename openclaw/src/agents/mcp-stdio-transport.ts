@@ -1,3 +1,6 @@
+/**
+ * OpenClaw stdio transport wrapper for MCP server subprocesses.
+ */
 import { spawn, type ChildProcess } from "node:child_process";
 import process from "node:process";
 import { PassThrough } from "node:stream";
@@ -5,9 +8,10 @@ import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js
 import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
-import { killProcessTree } from "../process/kill-tree.js";
+import { killProcessTree, signalProcessTree } from "../process/kill-tree.js";
+import { prepareOomScoreAdjustedSpawn } from "../process/linux-oom-score.js";
 
-export type OpenClawStdioServerParameters = {
+type OpenClawStdioServerParameters = {
   command: string;
   args?: string[];
   env?: Record<string, string>;
@@ -16,6 +20,7 @@ export type OpenClawStdioServerParameters = {
 };
 
 const CLOSE_TIMEOUT_MS = 2000;
+const SIGKILL_REAP_TIMEOUT_MS = 500;
 
 function delay(ms: number) {
   return new Promise<void>((resolve) => {
@@ -46,13 +51,19 @@ export class OpenClawStdioClientTransport implements Transport {
     }
 
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(this.serverParams.command, this.serverParams.args ?? [], {
+      const baseEnv = {
+        ...getDefaultEnvironment(),
+        ...this.serverParams.env,
+      };
+      const preparedSpawn = prepareOomScoreAdjustedSpawn(
+        this.serverParams.command,
+        this.serverParams.args ?? [],
+        { env: baseEnv },
+      );
+      const child = spawn(preparedSpawn.command, preparedSpawn.args, {
         cwd: this.serverParams.cwd,
         detached: process.platform !== "win32",
-        env: {
-          ...getDefaultEnvironment(),
-          ...this.serverParams.env,
-        },
+        env: preparedSpawn.env,
         shell: false,
         stdio: ["pipe", "pipe", this.serverParams.stderr ?? "inherit"],
         windowsHide: process.platform === "win32",
@@ -118,22 +129,40 @@ export class OpenClawStdioClientTransport implements Transport {
       if (processToClose.exitCode === null && processToClose.pid) {
         killProcessTree(processToClose.pid);
         await Promise.race([closePromise, delay(CLOSE_TIMEOUT_MS)]);
+        if (processToClose.exitCode === null && processToClose.pid) {
+          // SIGKILL synchronously: killProcessTree's setTimeout is .unref()'d and races shutdown (#86412).
+          signalProcessTree(processToClose.pid, "SIGKILL");
+          await Promise.race([closePromise, delay(SIGKILL_REAP_TIMEOUT_MS)]);
+        }
       }
     }
     this.readBuffer.clear();
   }
 
   send(message: JSONRPCMessage): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const stdin = this.process?.stdin;
       if (!stdin) {
         throw new Error("Not connected");
       }
       const json = serializeMessage(message);
-      if (stdin.write(json)) {
-        resolve();
-      } else {
-        stdin.once("drain", resolve);
+      // Settle from the write callback so async EPIPE rejects instead of
+      // escaping to uncaughtException. (#75438)
+      try {
+        const flushed = stdin.write(json, (err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+        if (!flushed) {
+          // Back-pressure: drain fires when the buffer empties, but the
+          // write callback above still owns promise settlement.
+          stdin.once("drain", () => {});
+        }
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
   }

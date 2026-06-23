@@ -1,8 +1,17 @@
-import { getChannelPlugin } from "../channels/plugins/index.js";
+/** Formatting helpers for `openclaw health` failures and channel summaries. */
+import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
+import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import { colorize, isRich, theme } from "../../packages/terminal-core/src/theme.js";
 import { formatChannelStatusState } from "../channels/plugins/status-state.js";
-import { asNullableRecord } from "../shared/record-coerce.js";
-import { colorize, isRich, theme } from "../terminal/theme.js";
+import { isGatewayTransportError } from "../gateway/call.js";
 import type { ChannelAccountHealthSummary, HealthSummary } from "./health.types.js";
+
+export function formatGatewayClosedDiagnostic(err: unknown): string | undefined {
+  if (!isGatewayTransportError(err) || err.kind !== "closed") {
+    return undefined;
+  }
+  return `Gateway connect failed: ${sanitizeTerminalText(err.message.split("\n", 1)[0] ?? "")}`;
+}
 
 const formatKv = (line: string, rich: boolean) => {
   const idx = line.indexOf(": ");
@@ -22,6 +31,7 @@ const formatKv = (line: string, rich: boolean) => {
   return `${colorize(rich, theme.muted, `${key}:`)} ${colorize(rich, valueColor, value)}`;
 };
 
+/** Formats thrown health errors with rich detail lines when terminal color is enabled. */
 export function formatHealthCheckFailure(err: unknown, opts: { rich?: boolean } = {}): string {
   const rich = opts.rich ?? isRich();
   const raw = String(err);
@@ -129,6 +139,7 @@ const isProbeFailure = (summary: ChannelAccountHealthSummary): boolean => {
   return ok === false;
 };
 
+/** Formats one terse health line per channel, optionally including every account. */
 export const formatHealthChannelLines = (
   summary: HealthSummary,
   opts: {
@@ -147,8 +158,7 @@ export const formatHealthChannelLines = (
     if (!channelSummary) {
       continue;
     }
-    const plugin = getChannelPlugin(channelId as never);
-    const label = summary.channelLabels?.[channelId] ?? plugin?.meta.label ?? channelId;
+    const label = summary.channelLabels?.[channelId] ?? channelId;
     const accountSummaries = channelSummary.accounts ?? {};
     const accountIds = opts.accountIdsByChannel?.[channelId];
     const filteredSummaries =
@@ -209,7 +219,7 @@ export const formatHealthChannelLines = (
             .map((account) => formatAccountProbeTiming(account))
             .filter((value): value is string => Boolean(value))
         : [];
-    const failedSummary = listSummaries.find((summary) => isProbeFailure(summary));
+    const failedSummary = listSummaries.find((summaryLocal) => isProbeFailure(summaryLocal));
     if (failedSummary) {
       const failureLine = formatProbeLine(failedSummary.probe, { botUsernames });
       if (failureLine) {

@@ -1,9 +1,19 @@
+/**
+ * Live-provider model error classifiers.
+ *
+ * Probe and fallback code uses these string checks to distinguish missing or
+ * deprecated model ids from generic provider/runtime failures.
+ */
+/** Returns whether a provider error message indicates a missing or retired model id. */
 export function isModelNotFoundErrorMessage(raw: string): boolean {
   const msg = raw.trim();
   if (!msg) {
     return false;
   }
   if (/no endpoints found for/i.test(msg)) {
+    return true;
+  }
+  if (/\brouter not found\b/i.test(msg)) {
     return true;
   }
   if (/unknown model/i.test(msg)) {
@@ -18,6 +28,9 @@ export function isModelNotFoundErrorMessage(raw: string): boolean {
   if (/not_found_error/i.test(msg)) {
     return true;
   }
+  if (/\bnot supported model\b/i.test(msg)) {
+    return true;
+  }
   if (/model:\s*[a-z0-9._/-]+/i.test(msg) && /not(?:[_\-\s])?found/i.test(msg)) {
     return true;
   }
@@ -25,6 +38,9 @@ export function isModelNotFoundErrorMessage(raw: string): boolean {
     return true;
   }
   if (/model/i.test(msg) && /does not exist/i.test(msg)) {
+    return true;
+  }
+  if (/selected model/i.test(msg) && /not(?:[_\-\s])?found/i.test(msg)) {
     return true;
   }
   if (/model/i.test(msg) && /deprecated/i.test(msg) && /(upgrade|transition) to/i.test(msg)) {
@@ -40,12 +56,4 @@ export function isModelNotFoundErrorMessage(raw: string): boolean {
     return true;
   }
   return false;
-}
-
-export function isMiniMaxModelNotFoundErrorMessage(raw: string): boolean {
-  const msg = raw.trim();
-  if (!msg) {
-    return false;
-  }
-  return /\b404\b.*\bpage not found\b/i.test(msg);
 }

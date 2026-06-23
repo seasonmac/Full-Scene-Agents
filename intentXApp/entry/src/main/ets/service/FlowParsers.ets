@@ -2,7 +2,7 @@
  * StreamUIAdapter 文本判定规则（02 文档 §4.1–§4.4, §4.6）。
  * 纯函数集合，供 StreamUIAdapter 主管线调用。
  */
-import { ApproachItem, ClarifyOption, PlanItem, SkillStep, UIBlock } from '../model/FlowModels';
+import { ApproachItem, ClarifyOption, SkillStep, UIBlock } from '../model/FlowModels';
 
 export class FlowParsers {
   // §4.1 clarify_question（单选题）
@@ -87,34 +87,6 @@ export class FlowParsers {
     block.preamble = text.substring(0, titleStarts[0]).trim();
     block.approaches = approaches;
     block.recommendedId = recMatch ? recMatch[1] : '';
-    return block;
-  }
-
-  // §4.3 plan_confirm（计划确认）
-  static parsePlanConfirm(text: string): UIBlock | null {
-    if (text.indexOf('这样创建可以吗') < 0) {
-      return null;
-    }
-    const titleMatch = text.match(/\*\*任务[：:]\*\*\s*(.+)/);
-    const items: PlanItem[] = [];
-    const itemRe = /^\s*\d+\.\s+\*\*(.+?)[：:]\*\*\s*(.+)$/gm;
-    let it: RegExpExecArray | null = itemRe.exec(text);
-    while (it !== null) {
-      const pi = new PlanItem();
-      pi.label = it[1].trim();
-      pi.value = it[2].trim();
-      items.push(pi);
-      it = itemRe.exec(text);
-    }
-    if (!titleMatch || items.length === 0) {
-      return null;
-    }
-    const block = new UIBlock();
-    block.kind = 'plan-confirm';
-    block.taskTitle = titleMatch[1].trim();
-    block.items = items;
-    block.question = '这样创建可以吗？';
-    block.approved = false;
     return block;
   }
 

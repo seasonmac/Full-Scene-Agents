@@ -1,3 +1,6 @@
+// Slack plugin module implements outbound adapter behavior.
+import type { OutboundIdentity } from "openclaw/plugin-sdk/channel-outbound";
+import { resolveOutboundSendDep } from "openclaw/plugin-sdk/channel-outbound";
 import {
   attachChannelToResult,
   type ChannelOutboundAdapter,
@@ -9,24 +12,22 @@ import {
   type MessagePresentation,
 } from "openclaw/plugin-sdk/interactive-runtime";
 import {
-  resolveOutboundSendDep,
-  type OutboundIdentity,
-} from "openclaw/plugin-sdk/outbound-runtime";
-import {
   resolvePayloadMediaUrls,
   sendPayloadMediaSequenceAndFinalize,
   sendTextMediaPayload,
 } from "openclaw/plugin-sdk/reply-payload";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { parseSlackBlocksInput } from "./blocks-input.js";
 import {
   buildSlackInteractiveBlocks,
   buildSlackPresentationBlocks,
+  resolveSlackInteractiveBlockOffsets,
   type SlackBlock,
 } from "./blocks-render.js";
 import { compileSlackInteractiveReplies } from "./interactive-replies.js";
 import { SLACK_TEXT_LIMIT } from "./limits.js";
 import type { SlackSendIdentity } from "./send.js";
+import { resolveSlackThreadTsValue } from "./thread-ts.js";
 
 const SLACK_MAX_BLOCKS = 50;
 type SlackSendFn = typeof import("./send.runtime.js").sendMessageSlack;
@@ -40,11 +41,15 @@ async function loadSlackSendRuntime() {
 
 function resolveRenderedInteractiveBlocks(
   interactive?: InteractiveReply,
+  previousBlocks?: readonly SlackBlock[],
 ): SlackBlock[] | undefined {
   if (!interactive) {
     return undefined;
   }
-  const blocks = buildSlackInteractiveBlocks(interactive);
+  const blocks = buildSlackInteractiveBlocks(
+    interactive,
+    resolveSlackInteractiveBlockOffsets(previousBlocks),
+  );
   return blocks.length > 0 ? blocks : undefined;
 }
 
@@ -84,9 +89,13 @@ async function sendSlackOutboundMessage(params: {
     resolveOutboundSendDep<SlackSendFn>(params.deps, "slack") ??
     (await loadSlackSendRuntime()).sendMessageSlack;
   const slackIdentity = resolveSlackSendIdentity(params.identity);
+  const threadTs = resolveSlackThreadTsValue({
+    replyToId: params.replyToId,
+    threadId: params.threadId,
+  });
   const result = await send(params.to, params.text, {
     cfg: params.cfg,
-    threadTs: params.replyToId ?? (params.threadId != null ? String(params.threadId) : undefined),
+    threadTs,
     accountId: params.accountId ?? undefined,
     ...(params.mediaUrl
       ? {
@@ -112,13 +121,14 @@ function resolveSlackBlocks(payload: {
     | undefined;
   const nativeBlocks = parseSlackBlocksInput(slackData?.blocks) as SlackBlock[] | undefined;
   const renderedPresentation =
-    slackData?.presentationBlocks ?? buildSlackPresentationBlocks(payload.presentation);
-  const renderedInteractive = resolveRenderedInteractiveBlocks(payload.interactive);
-  const mergedBlocks = [
-    ...(nativeBlocks ?? []),
-    ...renderedPresentation,
-    ...(renderedInteractive ?? []),
-  ];
+    slackData?.presentationBlocks ??
+    buildSlackPresentationBlocks(
+      payload.presentation,
+      resolveSlackInteractiveBlockOffsets(nativeBlocks),
+    );
+  const previousBlocks = [...(nativeBlocks ?? []), ...renderedPresentation];
+  const renderedInteractive = resolveRenderedInteractiveBlocks(payload.interactive, previousBlocks);
+  const mergedBlocks = [...previousBlocks, ...(renderedInteractive ?? [])];
   if (mergedBlocks.length === 0) {
     return undefined;
   }
@@ -141,17 +151,47 @@ export const slackOutbound: ChannelOutboundAdapter = {
     selects: true,
     context: true,
     divider: true,
-  },
-  renderPresentation: ({ payload, presentation }) => ({
-    ...payload,
-    channelData: {
-      ...payload.channelData,
-      slack: {
-        ...(payload.channelData?.slack as Record<string, unknown> | undefined),
-        presentationBlocks: buildSlackPresentationBlocks(presentation),
+    limits: {
+      actions: {
+        maxActionsPerRow: 25,
+        maxLabelLength: 75,
+        maxValueBytes: 2000,
+        supportsStyles: true,
+      },
+      selects: {
+        maxOptions: 100,
+        maxLabelLength: 75,
+        maxValueBytes: 150,
+      },
+      text: {
+        maxLength: SLACK_TEXT_LIMIT,
+        encoding: "characters",
+        markdownDialect: "slack-mrkdwn",
+        supportsEdit: true,
       },
     },
-  }),
+  },
+  renderPresentation: ({ payload, presentation }) => {
+    const slackData = payload.channelData?.slack as Record<string, unknown> | undefined;
+    const nativeBlocks = parseSlackBlocksInput(slackData?.blocks) as SlackBlock[] | undefined;
+    const presentationBlocks = buildSlackPresentationBlocks(
+      presentation,
+      resolveSlackInteractiveBlockOffsets(nativeBlocks),
+    );
+    if (presentationBlocks.length === 0) {
+      return null;
+    }
+    return {
+      ...payload,
+      channelData: {
+        ...payload.channelData,
+        slack: {
+          ...slackData,
+          presentationBlocks,
+        },
+      },
+    };
+  },
   sendPayload: async (ctx) => {
     const payload = {
       ...ctx.payload,

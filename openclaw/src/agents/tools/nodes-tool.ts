@@ -1,20 +1,31 @@
+/**
+ * nodes built-in tool.
+ *
+ * Manages node pairing, notifications, device state, media capture, and approved command invocation.
+ */
 import crypto from "node:crypto";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
+import { readConnectPairingRequiredMessage } from "../../../packages/gateway-protocol/src/connect-error-details.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { OperatorScope } from "../../gateway/method-scopes.js";
-import { readConnectPairingRequiredMessage } from "../../gateway/protocol/connect-error-details.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveNodePairApprovalScopes } from "../../infra/node-pairing-authz.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { resolveImageSanitizationLimits } from "../image-sanitization.js";
-import { optionalStringEnum, stringEnum } from "../schema/typebox.js";
+import {
+  optionalFiniteNumberSchema,
+  optionalNonNegativeIntegerSchema,
+  optionalPositiveIntegerSchema,
+  optionalStringEnum,
+  stringEnum,
+} from "../schema/typebox.js";
 import { type AnyAgentTool, jsonResult, readStringParam } from "./common.js";
+import { gatewayCallOptionSchemaProperties } from "./gateway-schema.js";
 import { callGatewayTool, readGatewayCallOptions } from "./gateway.js";
 import { executeNodeCommandAction, type NodeCommandAction } from "./nodes-tool-commands.js";
 import { executeNodeMediaAction, MEDIA_INVOKE_ACTIONS } from "./nodes-tool-media.js";
 import { resolveNodeId } from "./nodes-utils.js";
-import { isOpenClawOwnerOnlyCoreToolName } from "./owner-only-tools.js";
 
 const NODES_TOOL_ACTIONS = [
   "status",
@@ -28,6 +39,7 @@ const NODES_TOOL_ACTIONS = [
   "camera_clip",
   "photos_latest",
   "screen_record",
+  "screen_snapshot",
   "location_get",
   "notifications_list",
   "notifications_action",
@@ -35,7 +47,6 @@ const NODES_TOOL_ACTIONS = [
   "device_info",
   "device_permissions",
   "device_health",
-  "card_reminder_update",
   "invoke",
 ] as const;
 
@@ -78,9 +89,7 @@ async function resolveNodePairApproveScopes(
 // Flattened schema: runtime validates per-action requirements.
 const NodesToolSchema = Type.Object({
   action: stringEnum(NODES_TOOL_ACTIONS),
-  gatewayUrl: Type.Optional(Type.String()),
-  gatewayToken: Type.Optional(Type.String()),
-  timeoutMs: Type.Optional(Type.Number()),
+  ...gatewayCallOptionSchemaProperties(),
   node: Type.Optional(Type.String()),
   requestId: Type.Optional(Type.String()),
   // notify
@@ -89,25 +98,25 @@ const NodesToolSchema = Type.Object({
   sound: Type.Optional(Type.String()),
   priority: optionalStringEnum(NOTIFY_PRIORITIES),
   delivery: optionalStringEnum(NOTIFY_DELIVERIES),
-  // camera_snap / camera_clip
+  // camera_snap / camera_clip / photos_latest / screen_snapshot
   facing: optionalStringEnum(CAMERA_FACING, {
     description: "camera_snap: front/back/both; camera_clip: front/back only.",
   }),
-  maxWidth: Type.Optional(Type.Number()),
-  quality: Type.Optional(Type.Number()),
-  delayMs: Type.Optional(Type.Number()),
+  maxWidth: optionalPositiveIntegerSchema(),
+  quality: optionalFiniteNumberSchema({ minimum: 0, maximum: 1 }),
+  delayMs: optionalNonNegativeIntegerSchema(),
   deviceId: Type.Optional(Type.String()),
-  limit: Type.Optional(Type.Number()),
+  limit: optionalPositiveIntegerSchema({ maximum: 20 }),
   duration: Type.Optional(Type.String()),
-  durationMs: Type.Optional(Type.Number({ maximum: 300_000 })),
+  durationMs: optionalPositiveIntegerSchema({ maximum: 300_000 }),
   includeAudio: Type.Optional(Type.Boolean()),
   // screen_record
-  fps: Type.Optional(Type.Number()),
-  screenIndex: Type.Optional(Type.Number()),
+  fps: optionalFiniteNumberSchema({ exclusiveMinimum: 0 }),
+  screenIndex: optionalNonNegativeIntegerSchema(),
   outPath: Type.Optional(Type.String()),
   // location_get
-  maxAgeMs: Type.Optional(Type.Number()),
-  locationTimeoutMs: Type.Optional(Type.Number()),
+  maxAgeMs: optionalNonNegativeIntegerSchema(),
+  locationTimeoutMs: optionalPositiveIntegerSchema(),
   desiredAccuracy: optionalStringEnum(LOCATION_ACCURACY),
   // notifications_action
   notificationAction: optionalStringEnum(NOTIFICATIONS_ACTIONS),
@@ -116,12 +125,7 @@ const NodesToolSchema = Type.Object({
   // invoke
   invokeCommand: Type.Optional(Type.String()),
   invokeParamsJson: Type.Optional(Type.String()),
-  invokeTimeoutMs: Type.Optional(Type.Number()),
-  // card_reminder_update
-  cardTitle: Type.Optional(Type.String({ description: "Optional card title shown above the body" })),
-  cardBody: Type.Optional(Type.String({ description: "Main card body text, bold and darkest" })),
-  cardNote: Type.Optional(Type.String({ description: "Optional footer note below the body" })),
-  cardImageUrl: Type.Optional(Type.String({ description: "Optional right-side image URL (http/https)" })),
+  invokeTimeoutMs: optionalPositiveIntegerSchema(),
 });
 
 export function createNodesTool(options?: {
@@ -142,9 +146,8 @@ export function createNodesTool(options?: {
   return {
     label: "Nodes",
     name: "nodes",
-    ownerOnly: isOpenClawOwnerOnlyCoreToolName("nodes"),
     description:
-      "Discover and control paired nodes (status/describe/pairing/notify/camera/photos/screen/location/notifications/card_reminder/invoke).",
+      "Discover/control paired nodes: status, describe, pairing, notify, camera/photos/screen/location/notifications/invoke. Use file_fetch for files.",
     parameters: NodesToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
@@ -210,32 +213,6 @@ export function createNodesTool(options?: {
             });
             return jsonResult({ ok: true });
           }
-          case "card_reminder_update": {
-            const node = readStringParam(params, "node", { required: true });
-            const cardBody = typeof params.cardBody === "string" ? params.cardBody.trim() : "";
-            if (!cardBody) {
-              throw new Error("cardBody is required");
-            }
-            const nodeId = await resolveNodeId(gatewayOpts, node);
-            const commandParams: Record<string, string | undefined> = {};
-            commandParams.body = cardBody;
-            if (typeof params.cardTitle === "string" && params.cardTitle.trim()) {
-              commandParams.title = params.cardTitle.trim();
-            }
-            if (typeof params.cardNote === "string" && params.cardNote.trim()) {
-              commandParams.note = params.cardNote.trim();
-            }
-            if (typeof params.cardImageUrl === "string" && params.cardImageUrl.trim()) {
-              commandParams.imageUrl = params.cardImageUrl.trim();
-            }
-            await callGatewayTool("node.invoke", gatewayOpts, {
-              nodeId,
-              command: "card.reminder.update",
-              params: commandParams,
-              idempotencyKey: crypto.randomUUID(),
-            });
-            return jsonResult({ ok: true });
-          }
           case "camera_snap": {
             return await executeNodeMediaAction({
               action,
@@ -287,6 +264,15 @@ export function createNodesTool(options?: {
             });
           }
           case "screen_record": {
+            return await executeNodeMediaAction({
+              action,
+              params,
+              gatewayOpts,
+              modelHasVision: options?.modelHasVision,
+              imageSanitization,
+            });
+          }
+          case "screen_snapshot": {
             return await executeNodeMediaAction({
               action,
               params,

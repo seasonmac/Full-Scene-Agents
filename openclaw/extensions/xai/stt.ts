@@ -1,3 +1,4 @@
+// Xai plugin module implements stt behavior.
 import type {
   AudioTranscriptionRequest,
   AudioTranscriptionResult,
@@ -5,11 +6,12 @@ import type {
 } from "openclaw/plugin-sdk/media-understanding";
 import {
   assertOkOrThrowHttpError,
+  buildAudioTranscriptionFormData,
   postTranscriptionRequest,
   resolveProviderHttpRequestConfig,
   requireTranscriptionText,
 } from "openclaw/plugin-sdk/provider-http";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { XAI_BASE_URL } from "./model-definitions.js";
 
 export const XAI_DEFAULT_STT_MODEL = "grok-stt";
@@ -41,19 +43,17 @@ export async function transcribeXaiAudio(
       transport: "media-understanding",
     });
 
-  const form = new FormData();
-  const blob = new Blob([new Uint8Array(params.buffer)], {
-    type: params.mime ?? "application/octet-stream",
-  });
-  form.append("file", blob, params.fileName || "audio");
   const model = normalizeOptionalString(params.model);
-  if (model) {
-    form.append("model", model);
-  }
   const language = normalizeOptionalString(params.language);
-  if (language) {
-    form.append("language", language);
-  }
+  const form = buildAudioTranscriptionFormData({
+    buffer: params.buffer,
+    fileName: params.fileName,
+    mime: params.mime,
+    fields: {
+      model,
+      language,
+    },
+  });
 
   const { response, release } = await postTranscriptionRequest({
     url: `${baseUrl}/stt`,
@@ -79,6 +79,9 @@ export async function transcribeXaiAudio(
 }
 
 export function buildXaiMediaUnderstandingProvider(): MediaUnderstandingProvider {
+  // Auth is resolved by media-understanding core via resolveProviderExecutionContext
+  // before transcribeAudio runs, so an OAuth profile (when configured) reaches
+  // here as `params.apiKey` already. No plugin-side fallback required.
   return {
     id: "xai",
     capabilities: ["audio"],
