@@ -39,7 +39,8 @@ export type Tab =
   | "aiAgents"
   | "debug"
   | "logs"
-  | "dreams";
+  | "dreams"
+  | "tracing";
 
 export const SETTINGS_TABS = [
   "config",

@@ -67,6 +67,7 @@ import {
 import { isCronJobActiveFailure } from "./cron-status.ts";
 import { syncCustomThemeStyleTag } from "./custom-theme.ts";
 import { isMonitoredAuthProvider } from "./model-auth-helpers.ts";
+import type { OpenClawApp } from "./app.ts";
 import {
   inferBasePathFromPathname,
   normalizeBasePath,
