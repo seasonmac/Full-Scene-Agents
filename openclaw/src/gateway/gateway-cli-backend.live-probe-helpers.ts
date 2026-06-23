@@ -1,6 +1,10 @@
+// CLI backend live probe helpers run cron/MCP/image probes through the gateway
+// CLI backend and poll for externally visible live results.
 import { randomUUID } from "node:crypto";
+import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { renderCatFacePngBase64 } from "../../test/helpers/live-image-probe.js";
 import { isTruthyEnvValue } from "../infra/env.js";
-import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
+import { parseStrictPositiveInteger } from "../infra/parse-finite-number.js";
 import type { GatewayClient } from "./client.js";
 import {
   shouldRetryCliCronMcpProbeReply,
@@ -15,9 +19,7 @@ import {
   runOpenClawCliJson,
   type CronListJob,
 } from "./live-agent-probes.js";
-import { renderCatFacePngBase64 } from "./live-image-probe.js";
 import { getActiveMcpLoopbackRuntime } from "./mcp-http.js";
-import { resolveMcpLoopbackBearerToken } from "./mcp-http.loopback-runtime.js";
 import { extractPayloadText } from "./test-helpers.agent-results.js";
 
 // CI Docker live lanes can see repeated cancelled cron tool calls before a job
@@ -25,6 +27,8 @@ import { extractPayloadText } from "./test-helpers.agent-results.js";
 const CLI_CRON_MCP_PROBE_MAX_ATTEMPTS = 10;
 const CLI_CRON_MCP_PROBE_VERIFY_POLLS = 20;
 const CLI_CRON_MCP_PROBE_VERIFY_POLL_MS = 2_000;
+const CLI_CRON_MCP_LOOPBACK_REQUEST_TIMEOUT_MS = 30_000;
+const CLI_CRON_MCP_LOOPBACK_MAX_BODY_BYTES = 1_048_576;
 
 function shouldLogCliCronProbe(): boolean {
   return (
@@ -42,7 +46,9 @@ function logCliCronProbe(step: string, details?: Record<string, unknown>): void 
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function pollCliCronJobVisible(params: {
@@ -74,24 +80,122 @@ async function pollCliCronJobVisible(params: {
   return { pollsUsed: polls };
 }
 
+async function removeCliCronJobBestEffort(params: {
+  id: string;
+  port: number;
+  token: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  try {
+    await runOpenClawCliJson(
+      [
+        "cron",
+        "rm",
+        params.id,
+        "--json",
+        "--url",
+        `ws://127.0.0.1:${params.port}`,
+        "--token",
+        params.token,
+      ],
+      params.env,
+    );
+  } catch (error) {
+    logCliCronProbe("cleanup:cron-rm-failed", {
+      jobId: params.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 type LoopbackJsonRpcResponse = {
   result?: unknown;
   error?: { message?: string };
 };
 
+type LoopbackToolListEntry = {
+  name?: string;
+  inputSchema?: unknown;
+};
+
+function parsePositiveInt(value: string | undefined, fallback: number, name: string): number {
+  if (!value?.trim()) {
+    return fallback;
+  }
+  const parsed = parseStrictPositiveInteger(value);
+  if (parsed === undefined) {
+    throw new Error(`invalid ${name}: ${value}`);
+  }
+  return parsed;
+}
+
+function asLoopbackSchemaRecord(schema: unknown): Record<string, unknown> | null {
+  return schema && typeof schema === "object" && !Array.isArray(schema)
+    ? (schema as Record<string, unknown>)
+    : null;
+}
+
+function assertLoopbackObjectSchemasHaveProperties(params: {
+  tools: LoopbackToolListEntry[];
+  expectedSchemaProbeToolName?: string;
+}): void {
+  const missingProperties = params.tools
+    .filter((tool) => {
+      const schema = asLoopbackSchemaRecord(tool.inputSchema);
+      if (!schema || schema.type !== "object") {
+        return false;
+      }
+      const properties = schema.properties;
+      return (
+        !Object.hasOwn(schema, "properties") ||
+        !properties ||
+        typeof properties !== "object" ||
+        Array.isArray(properties)
+      );
+    })
+    .map((tool) => tool.name)
+    .filter((name): name is string => typeof name === "string" && name.length > 0);
+
+  if (missingProperties.length > 0) {
+    throw new Error(
+      `mcp loopback tools/list exposed object schemas without properties: ${missingProperties.join(
+        ", ",
+      )}`,
+    );
+  }
+
+  const expectedToolName = params.expectedSchemaProbeToolName;
+  if (!expectedToolName) {
+    return;
+  }
+  const tool = params.tools.find((candidate) => candidate.name === expectedToolName);
+  if (!tool) {
+    throw new Error(`mcp loopback tools/list did not expose ${expectedToolName}`);
+  }
+  const schema = asLoopbackSchemaRecord(tool.inputSchema);
+  if (
+    !schema ||
+    schema.type !== "object" ||
+    !Object.hasOwn(schema, "properties") ||
+    !asLoopbackSchemaRecord(schema.properties)
+  ) {
+    throw new Error(`mcp loopback schema probe ${expectedToolName} was not normalized`);
+  }
+}
+
 async function callLoopbackJsonRpc(params: {
   sessionKey: string;
-  senderIsOwner: boolean;
   messageProvider?: string;
   accountId?: string;
   body: Record<string, unknown>;
+  env?: NodeJS.ProcessEnv;
 }): Promise<LoopbackJsonRpcResponse> {
   const runtime = getActiveMcpLoopbackRuntime();
   if (!runtime) {
     throw new Error("mcp loopback runtime is not active");
   }
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${resolveMcpLoopbackBearerToken(runtime, params.senderIsOwner)}`,
+    Authorization: `Bearer ${runtime.ownerToken}`,
     "Content-Type": "application/json",
     "x-session-key": params.sessionKey,
   };
@@ -101,12 +205,34 @@ async function callLoopbackJsonRpc(params: {
   if (params.accountId) {
     headers["x-openclaw-account-id"] = params.accountId;
   }
-  const response = await fetch(`http://127.0.0.1:${runtime.port}/mcp`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(params.body),
-  });
-  const text = await response.text();
+  const timeoutMs = parsePositiveInt(
+    params.env?.OPENCLAW_MCP_LOOPBACK_PROBE_TIMEOUT_MS,
+    CLI_CRON_MCP_LOOPBACK_REQUEST_TIMEOUT_MS,
+    "OPENCLAW_MCP_LOOPBACK_PROBE_TIMEOUT_MS",
+  );
+  const maxBodyBytes = parsePositiveInt(
+    params.env?.OPENCLAW_MCP_LOOPBACK_PROBE_MAX_BODY_BYTES,
+    CLI_CRON_MCP_LOOPBACK_MAX_BODY_BYTES,
+    "OPENCLAW_MCP_LOOPBACK_PROBE_MAX_BODY_BYTES",
+  );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response | undefined;
+  let text;
+  try {
+    response = await fetch(`http://127.0.0.1:${runtime.port}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(params.body),
+      signal: controller.signal,
+    });
+    text = await readBoundedResponseText(response, maxBodyBytes);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!response) {
+    throw new Error("mcp loopback did not return a response");
+  }
   if (!response.ok) {
     throw new Error(`mcp loopback http ${response.status}: ${text}`);
   }
@@ -120,27 +246,48 @@ async function callLoopbackJsonRpc(params: {
   return parsed;
 }
 
+async function readBoundedResponseText(response: Response, byteLimit: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return "";
+  }
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    totalBytes += value.byteLength;
+    if (totalBytes > byteLimit) {
+      await reader.cancel();
+      throw new Error(`mcp loopback response body exceeded ${byteLimit} bytes`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, totalBytes).toString("utf8");
+}
+
 export async function verifyCliCronMcpLoopbackPreflight(params: {
   sessionKey: string;
   port: number;
   token: string;
   env: NodeJS.ProcessEnv;
-  senderIsOwner: boolean;
   messageProvider?: string;
   accountId?: string;
+  expectedSchemaProbeToolName?: string;
 }): Promise<void> {
   const cronProbe = createLiveCronProbeSpec();
   logCliCronProbe("loopback-preflight:start", {
     sessionKey: params.sessionKey,
-    senderIsOwner: params.senderIsOwner,
     jobName: cronProbe.name,
   });
 
   await callLoopbackJsonRpc({
     sessionKey: params.sessionKey,
-    senderIsOwner: params.senderIsOwner,
     messageProvider: params.messageProvider,
     accountId: params.accountId,
+    env: params.env,
     body: {
       jsonrpc: "2.0",
       id: "init",
@@ -150,40 +297,41 @@ export async function verifyCliCronMcpLoopbackPreflight(params: {
   });
   await callLoopbackJsonRpc({
     sessionKey: params.sessionKey,
-    senderIsOwner: params.senderIsOwner,
     messageProvider: params.messageProvider,
     accountId: params.accountId,
+    env: params.env,
     body: { jsonrpc: "2.0", method: "notifications/initialized" },
   });
   const toolsList = await callLoopbackJsonRpc({
     sessionKey: params.sessionKey,
-    senderIsOwner: params.senderIsOwner,
     messageProvider: params.messageProvider,
     accountId: params.accountId,
+    env: params.env,
     body: { jsonrpc: "2.0", id: "tools-list", method: "tools/list" },
   });
   const tools = Array.isArray((toolsList.result as { tools?: unknown[] } | undefined)?.tools)
-    ? (((toolsList.result as { tools?: unknown[] }).tools ?? []) as Array<{ name?: string }>)
+    ? (((toolsList.result as { tools?: unknown[] }).tools ?? []) as LoopbackToolListEntry[])
     : [];
+  assertLoopbackObjectSchemasHaveProperties({
+    tools,
+    expectedSchemaProbeToolName: params.expectedSchemaProbeToolName,
+  });
   const toolNames = tools
     .map((tool) => (typeof tool.name === "string" ? tool.name : ""))
     .filter(Boolean);
   logCliCronProbe("loopback-preflight:tools", {
-    senderIsOwner: params.senderIsOwner,
     toolCount: toolNames.length,
     cronVisible: toolNames.includes("cron"),
   });
   if (!toolNames.includes("cron")) {
-    throw new Error(
-      `mcp loopback tools/list did not expose cron (senderIsOwner=${String(params.senderIsOwner)})`,
-    );
+    throw new Error("mcp loopback tools/list did not expose cron");
   }
 
   const toolCall = await callLoopbackJsonRpc({
     sessionKey: params.sessionKey,
-    senderIsOwner: params.senderIsOwner,
     messageProvider: params.messageProvider,
     accountId: params.accountId,
+    env: params.env,
     body: {
       jsonrpc: "2.0",
       id: "cron-add",
@@ -227,19 +375,12 @@ export async function verifyCliCronMcpLoopbackPreflight(params: {
     expectedSessionKey: params.sessionKey,
   });
   if (createdJob.id) {
-    await runOpenClawCliJson(
-      [
-        "cron",
-        "rm",
-        createdJob.id,
-        "--json",
-        "--url",
-        `ws://127.0.0.1:${params.port}`,
-        "--token",
-        params.token,
-      ],
-      params.env,
-    );
+    await removeCliCronJobBestEffort({
+      id: createdJob.id,
+      port: params.port,
+      token: params.token,
+      env: params.env,
+    });
   }
   logCliCronProbe("loopback-preflight:done", { jobName: cronProbe.name });
 }
@@ -267,8 +408,7 @@ export async function verifyCliBackendImageProbe(params: {
       // still receives a local file path, but now via the runner code we
       // actually want to validate instead of an ad hoc prompt-only shortcut.
       message:
-        "Best match for the image: lobster, mouse, cat, horse. " +
-        "Reply with one lowercase word only.",
+        "What animal is drawn in the attached image? Reply with only the lowercase animal name.",
       attachments: [
         {
           mimeType: "image/png",
@@ -368,18 +508,11 @@ export async function verifyCliCronMcpProbe(params: {
     expectedSessionKey: params.sessionKey,
   });
   if (createdJob?.id) {
-    await runOpenClawCliJson(
-      [
-        "cron",
-        "rm",
-        createdJob.id,
-        "--json",
-        "--url",
-        `ws://127.0.0.1:${params.port}`,
-        "--token",
-        params.token,
-      ],
-      params.env,
-    );
+    await removeCliCronJobBestEffort({
+      id: createdJob.id,
+      port: params.port,
+      token: params.token,
+      env: params.env,
+    });
   }
 }
