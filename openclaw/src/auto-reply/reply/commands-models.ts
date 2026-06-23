@@ -1,36 +1,48 @@
-import { resolveAgentDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
-import { resolveModelAuthLabel } from "../../agents/model-auth-label.js";
-import { loadModelCatalog } from "../../agents/model-catalog.js";
-import {
-  buildAllowedModelSet,
-  buildModelAliasIndex,
-  normalizeProviderId,
-  resolveDefaultModelForAgent,
-  resolveModelRefFromString,
-} from "../../agents/model-selection.js";
-import { resolveConfigWriteTargetFromPath } from "../../channels/plugins/config-writes.js";
-import { getChannelPlugin } from "../../channels/plugins/index.js";
-import { normalizeChannelId } from "../../channels/registry.js";
-import { isModelsWriteEnabled } from "../../config/commands.flags.js";
-import type { SessionEntry } from "../../config/sessions.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
+// Implements model listing and provider catalog commands.
+import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
-} from "../../shared/string-coerce.js";
-import type { ReplyPayload } from "../types.js";
-import { resolveChannelAccountId } from "./channel-context.js";
+} from "@openclaw/normalization-core/string-coerce";
 import {
-  rejectNonOwnerCommand,
-  rejectUnauthorizedCommand,
-  requireGatewayClientScopeForInternalChannel,
-} from "./command-gates.js";
+  resolveAgentDir,
+  resolveAgentWorkspaceDir,
+  resolveSessionAgentId,
+} from "../../agents/agent-scope.js";
+import { listCliRuntimeModelBackendBindings } from "../../agents/cli-backends.js";
+import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
+import { resolveModelAuthLabel } from "../../agents/model-auth-label.js";
+import { loadModelCatalogForBrowse } from "../../agents/model-catalog-browse.js";
+import { resolveVisibleModelCatalog } from "../../agents/model-catalog-visibility.js";
+import { loadModelCatalog } from "../../agents/model-catalog.js";
+import { isRetiredModelPickerProvider } from "../../agents/model-picker-visibility.js";
+import { createProviderAuthChecker } from "../../agents/model-provider-auth.js";
+import {
+  buildModelAliasIndex,
+  normalizeProviderId,
+  resolveBareModelDefaultProvider,
+  resolveDefaultModelForAgent,
+  resolveModelRefFromString,
+} from "../../agents/model-selection.js";
+import {
+  RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
+  createModelVisibilityPolicy,
+} from "../../agents/model-visibility-policy.js";
+import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../../agents/openai-routing.js";
+import { resolveDefaultAgentWorkspaceDir } from "../../agents/workspace.js";
+import { getChannelPlugin } from "../../channels/plugins/index.js";
+import type { SessionEntry } from "../../config/sessions.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { getCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
+import { resolveAgentRuntimeLabel } from "../../status/agent-runtime-label.js";
+import type { ReplyPayload } from "../types.js";
+import { rejectUnauthorizedCommand } from "./command-gates.js";
 import type { CommandHandler } from "./commands-types.js";
-import { resolveConfigWriteDeniedText } from "./config-write-authorization.js";
-import { addModelToConfig, listAddableProviders, validateAddProvider } from "./models-add.js";
 
 const PAGE_SIZE_DEFAULT = 20;
 const PAGE_SIZE_MAX = 100;
+const MODELS_ADD_DEPRECATED_TEXT =
+  "⚠️ /models add is deprecated. Use /models to browse providers and /model to switch models.";
 
 type ModelsCommandSessionEntry = Partial<
   Pick<SessionEntry, "authProfileOverride" | "modelProvider" | "model">
@@ -41,6 +53,13 @@ export type ModelsProviderData = {
   providers: string[];
   resolvedDefault: { provider: string; model: string };
   modelNames: Map<string, string>;
+  runtimeChoicesByProvider?: Map<string, ModelsRuntimeChoice[]>;
+};
+
+export type ModelsRuntimeChoice = {
+  id: string;
+  label: string;
+  description: string;
 };
 
 type ParsedModelsCommand =
@@ -58,32 +77,153 @@ type ParsedModelsCommand =
       modelId?: string;
     };
 
+function isModelsBrowseVisibleProvider(provider: string): boolean {
+  return !isRetiredModelPickerProvider(provider);
+}
+
+function usesUnfilteredCatalogModels(
+  provider: string,
+  cliRuntimeProviders: ReadonlySet<string>,
+): boolean {
+  return cliRuntimeProviders.has(normalizeProviderId(provider));
+}
+
+function normalizeRuntimeChoiceId(runtime: string | undefined): string {
+  const normalized = normalizeLowercaseStringOrEmpty(runtime);
+  if (!normalized || normalized === "auto" || normalized === "default") {
+    return "openclaw";
+  }
+  return normalized;
+}
+
+function buildRuntimeChoice(params: {
+  cfg: OpenClawConfig;
+  provider: string;
+  runtime: string;
+  cli?: boolean;
+}): ModelsRuntimeChoice {
+  const id = normalizeRuntimeChoiceId(params.runtime);
+  const label = resolveAgentRuntimeLabel({ config: params.cfg, resolvedHarness: id });
+  return {
+    id,
+    label,
+    description:
+      id === "openclaw"
+        ? "Use the built-in OpenClaw runtime."
+        : params.cli
+          ? `Run ${params.provider} models through ${label}.`
+          : `Use the ${label} runtime selected by the effective harness policy.`,
+  };
+}
+
+function buildDefaultRuntimeChoice(params: {
+  cfg: OpenClawConfig;
+  agentId?: string;
+  provider: string;
+  modelId?: string;
+}): ModelsRuntimeChoice {
+  const harnessPolicy = resolveAgentHarnessPolicy({
+    config: params.cfg,
+    provider: params.provider,
+    modelId: params.modelId,
+    agentId: params.agentId,
+  });
+  return buildRuntimeChoice({
+    cfg: params.cfg,
+    provider: params.provider,
+    runtime: harnessPolicy.runtime,
+  });
+}
+
+function addRuntimeChoice(
+  choices: ModelsRuntimeChoice[],
+  choice: ModelsRuntimeChoice,
+): ModelsRuntimeChoice[] {
+  if (!choices.some((existing) => existing.id === choice.id)) {
+    choices.push(choice);
+  }
+  return choices;
+}
+
 export async function buildModelsProviderData(
   cfg: OpenClawConfig,
   agentId?: string,
+  options: { view?: "default" | "all"; workspaceDir?: string } = {},
 ): Promise<ModelsProviderData> {
   const resolvedDefault = resolveDefaultModelForAgent({
     cfg,
     agentId,
   });
+  const workspaceDir =
+    options.workspaceDir ??
+    (agentId ? resolveAgentWorkspaceDir(cfg, agentId) : undefined) ??
+    resolveDefaultAgentWorkspaceDir();
+  const metadataSnapshot = getCurrentPluginMetadataSnapshot({
+    config: cfg,
+    workspaceDir,
+    env: process.env,
+    allowScopedSnapshot: true,
+  });
+  const cliRuntimeProviders = new Set(
+    listCliRuntimeModelBackendBindings().map((binding) => normalizeProviderId(binding.runtime)),
+  );
 
-  const catalog = await loadModelCatalog({ config: cfg });
-  const allowed = buildAllowedModelSet({
+  const catalog = await loadModelCatalogForBrowse({
+    cfg,
+    view: options.view ?? "default",
+    loadCatalog: ({ readOnly }) => loadModelCatalog({ config: cfg, readOnly, metadataSnapshot }),
+  });
+  const visibilityPolicy = createModelVisibilityPolicy({
     cfg,
     catalog,
     defaultProvider: resolvedDefault.provider,
     defaultModel: resolvedDefault.model,
     agentId,
+    ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
+  });
+  const hasAuth: (provider: string) => Promise<boolean> =
+    options.view === "all"
+      ? async () => true
+      : createProviderAuthChecker({
+          cfg,
+          workspaceDir,
+          agentId,
+          allowPluginSyntheticAuth: false,
+          discoverExternalCliAuth: false,
+          allowPreparedRuntimeAuth: true,
+        });
+  const visibleCatalog = await resolveVisibleModelCatalog({
+    cfg,
+    catalog,
+    defaultProvider: resolvedDefault.provider,
+    defaultModel: resolvedDefault.model,
+    agentId,
+    workspaceDir,
+    view: options.view,
+    runtimeAuthDiscovery: false,
+    providerAuthChecker: hasAuth,
   });
 
   const aliasIndex = buildModelAliasIndex({
     cfg,
     defaultProvider: resolvedDefault.provider,
   });
+  const restrictToProviderWildcards =
+    options.view !== "all" && visibilityPolicy.hasProviderWildcards;
 
   const byProvider = new Map<string, Set<string>>();
   const add = (p: string, m: string) => {
     const key = normalizeProviderId(p);
+    if (!isModelsBrowseVisibleProvider(key)) {
+      return;
+    }
+    if (
+      restrictToProviderWildcards &&
+      !usesUnfilteredCatalogModels(key, cliRuntimeProviders) &&
+      !visibilityPolicy.allows({ provider: key, model: m })
+    ) {
+      return;
+    }
     const set = byProvider.get(key) ?? new Set<string>();
     set.add(m);
     byProvider.set(key, set);
@@ -94,9 +234,17 @@ export async function buildModelsProviderData(
     if (!trimmed) {
       return;
     }
+    const defaultProvider = !trimmed.includes("/")
+      ? resolveBareModelDefaultProvider({
+          cfg,
+          catalog,
+          model: trimmed,
+          defaultProvider: resolvedDefault.provider,
+        })
+      : resolvedDefault.provider;
     const resolved = resolveModelRefFromString({
       raw: trimmed,
-      defaultProvider: resolvedDefault.provider,
+      defaultProvider,
       aliasIndex,
     });
     if (!resolved) {
@@ -127,11 +275,20 @@ export async function buildModelsProviderData(
     }
   };
 
-  for (const entry of allowed.allowedCatalog) {
+  for (const entry of visibleCatalog) {
     add(entry.provider, entry.id);
   }
 
-  for (const raw of Object.keys(cfg.agents?.defaults?.models ?? {})) {
+  for (const entry of catalog) {
+    if (
+      usesUnfilteredCatalogModels(entry.provider, cliRuntimeProviders) &&
+      (await hasAuth(entry.provider))
+    ) {
+      add(entry.provider, entry.id);
+    }
+  }
+
+  for (const raw of visibilityPolicy.exactModelRefs) {
     addRawModelRef(raw);
   }
 
@@ -141,13 +298,49 @@ export async function buildModelsProviderData(
   const providers = [...byProvider.keys()].toSorted();
 
   const modelNames = new Map<string, string>();
-  for (const entry of catalog) {
+  for (const entry of [...catalog, ...visibleCatalog]) {
     if (entry.name && entry.name !== entry.id) {
       modelNames.set(`${normalizeProviderId(entry.provider)}/${entry.id}`, entry.name);
     }
   }
 
-  return { byProvider, providers, resolvedDefault, modelNames };
+  const runtimeChoicesByProvider = new Map<string, ModelsRuntimeChoice[]>();
+  const runtimeBindings = [
+    { provider: "openai", runtime: "codex", cli: false },
+    ...listCliRuntimeModelBackendBindings().map((binding) => ({
+      provider: binding.provider,
+      runtime: binding.runtime,
+      cli: true,
+    })),
+  ];
+  for (const binding of runtimeBindings) {
+    const provider = normalizeProviderId(binding.provider);
+    const defaultModelId =
+      provider === normalizeProviderId(resolvedDefault.provider)
+        ? resolvedDefault.model
+        : undefined;
+    const choices = runtimeChoicesByProvider.get(provider) ?? [
+      buildDefaultRuntimeChoice({
+        cfg,
+        agentId,
+        provider,
+        modelId: defaultModelId,
+      }),
+    ];
+    addRuntimeChoice(choices, buildRuntimeChoice({ cfg, provider, runtime: "openclaw" }));
+    addRuntimeChoice(
+      choices,
+      buildRuntimeChoice({
+        cfg,
+        provider,
+        runtime: binding.runtime,
+        cli: binding.cli,
+      }),
+    );
+    runtimeChoicesByProvider.set(provider, choices);
+  }
+
+  return { byProvider, providers, resolvedDefault, modelNames, runtimeChoicesByProvider };
 }
 
 function formatProviderLine(params: { provider: string; count: number }): string {
@@ -166,17 +359,15 @@ function parseListArgs(tokens: string[]): Extract<ParsedModelsCommand, { action:
       continue;
     }
     if (lower.startsWith("page=")) {
-      const value = Number.parseInt(lower.slice("page=".length), 10);
-      if (Number.isFinite(value) && value > 0) {
+      const value = parseStrictPositiveInteger(lower.slice("page=".length));
+      if (value !== undefined) {
         page = value;
       }
       continue;
     }
-    if (/^[0-9]+$/.test(lower)) {
-      const value = Number.parseInt(lower, 10);
-      if (Number.isFinite(value) && value > 0) {
-        page = value;
-      }
+    const pageToken = parseStrictPositiveInteger(lower);
+    if (pageToken !== undefined) {
+      page = pageToken;
     }
   }
 
@@ -185,8 +376,8 @@ function parseListArgs(tokens: string[]): Extract<ParsedModelsCommand, { action:
     const lower = normalizeLowercaseStringOrEmpty(token);
     if (lower.startsWith("limit=") || lower.startsWith("size=")) {
       const rawValue = lower.slice(lower.indexOf("=") + 1);
-      const value = Number.parseInt(rawValue, 10);
-      if (Number.isFinite(value) && value > 0) {
+      const value = parseStrictPositiveInteger(rawValue);
+      if (value !== undefined) {
         pageSize = Math.min(PAGE_SIZE_MAX, value);
       }
     }
@@ -228,14 +419,28 @@ function parseModelsArgs(raw: string): ParsedModelsCommand {
 function resolveProviderLabel(params: {
   provider: string;
   cfg: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
+  workspaceDir?: string;
   sessionEntry?: ModelsCommandSessionEntry;
 }): string {
+  const harnessPolicy = resolveAgentHarnessPolicy({
+    config: params.cfg,
+    provider: params.provider,
+    agentId: params.agentId,
+  });
+  const acceptedProviderIds = listOpenAIAuthProfileProvidersForAgentRuntime({
+    provider: params.provider,
+    harnessRuntime: harnessPolicy.runtime,
+    config: params.cfg,
+  });
   const authLabel = resolveModelAuthLabel({
     provider: params.provider,
+    acceptedProviderIds,
     cfg: params.cfg,
     sessionEntry: params.sessionEntry,
     agentDir: params.agentDir,
+    workspaceDir: params.workspaceDir,
   });
   if (!authLabel || authLabel === "unknown") {
     return params.provider;
@@ -247,13 +452,17 @@ export function formatModelsAvailableHeader(params: {
   provider: string;
   total: number;
   cfg: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
+  workspaceDir?: string;
   sessionEntry?: ModelsCommandSessionEntry;
 }): string {
   const providerLabel = resolveProviderLabel({
     provider: params.provider,
     cfg: params.cfg,
+    agentId: params.agentId,
     agentDir: params.agentDir,
+    workspaceDir: params.workspaceDir,
     sessionEntry: params.sessionEntry,
   });
   return `Models (${providerLabel}) — ${params.total} available`;
@@ -262,7 +471,6 @@ export function formatModelsAvailableHeader(params: {
 function buildModelsMenuText(params: {
   providers: string[];
   byProvider: ReadonlyMap<string, ReadonlySet<string>>;
-  includeAddAction?: boolean;
 }): string {
   return [
     "Providers:",
@@ -275,42 +483,7 @@ function buildModelsMenuText(params: {
     "",
     "Use: /models <provider>",
     "Switch: /model <provider/model>",
-    ...(params.includeAddAction ? ["Add: /models add"] : []),
   ].join("\n");
-}
-
-function formatCopyableCommand(command: string): string {
-  return ["```text", command, "```"].join("\n");
-}
-
-function buildAddExamples(addableProviders: readonly string[]): string[] {
-  const examples: string[] = [];
-  if (addableProviders.includes("ollama")) {
-    examples.push("/models add ollama glm-5.1:cloud");
-  }
-  if (addableProviders.includes("lmstudio")) {
-    examples.push("/models add lmstudio qwen/qwen3.5-9b");
-  }
-  if (addableProviders.includes("codex")) {
-    examples.push("/models add codex gpt-5.4-mini");
-  }
-  if (addableProviders.includes("openai-codex")) {
-    examples.push("/models add openai-codex gpt-5.4");
-  }
-  if (examples.length === 0) {
-    examples.push("/models add <provider> <modelId>");
-  }
-  return examples.slice(0, 3);
-}
-
-function resolveWriteProvider(params: {
-  cfg: OpenClawConfig;
-  parsed: ParsedModelsCommand;
-}): string | undefined {
-  if (params.parsed.action !== "add") {
-    return undefined;
-  }
-  return params.parsed.provider ? normalizeProviderId(params.parsed.provider) : undefined;
 }
 
 function buildProviderInfos(params: {
@@ -330,6 +503,7 @@ export async function resolveModelsCommandReply(params: {
   currentModel?: string;
   agentId?: string;
   agentDir?: string;
+  workspaceDir?: string;
   sessionEntry?: ModelsCommandSessionEntry;
 }): Promise<ReplyPayload | null> {
   const body = params.commandBodyNormalized.trim();
@@ -343,18 +517,19 @@ export async function resolveModelsCommandReply(params: {
   const { byProvider, providers, modelNames } = await buildModelsProviderData(
     params.cfg,
     params.agentId,
+    {
+      ...(parsed.action === "list" && parsed.all ? { view: "all" as const } : {}),
+      workspaceDir: params.workspaceDir,
+    },
   );
   const commandPlugin = params.surface ? getChannelPlugin(params.surface) : null;
   const providerInfos = buildProviderInfos({ providers, byProvider });
-  const modelsWriteEnabled = isModelsWriteEnabled(params.cfg);
 
   if (parsed.action === "providers") {
     const channelData =
-      (modelsWriteEnabled
-        ? commandPlugin?.commands?.buildModelsMenuChannelData?.({
-            providers: providerInfos,
-          })
-        : null) ??
+      commandPlugin?.commands?.buildModelsMenuChannelData?.({
+        providers: providerInfos,
+      }) ??
       commandPlugin?.commands?.buildModelsProviderChannelData?.({
         providers: providerInfos,
       });
@@ -365,107 +540,12 @@ export async function resolveModelsCommandReply(params: {
       };
     }
     return {
-      text: buildModelsMenuText({ providers, byProvider, includeAddAction: modelsWriteEnabled }),
+      text: buildModelsMenuText({ providers, byProvider }),
     };
   }
 
   if (parsed.action === "add") {
-    if (!modelsWriteEnabled) {
-      return {
-        text: "⚠️ /models add is disabled. Set commands.modelsWrite=true to enable model registration.",
-      };
-    }
-    const addableProviders = listAddableProviders({
-      cfg: params.cfg,
-      discoveredProviders: providers,
-    });
-    if (!parsed.provider) {
-      const channelData = commandPlugin?.commands?.buildModelsAddProviderChannelData?.({
-        providers: addableProviders.map((id) => ({ id })),
-      });
-      return {
-        text: [
-          "Add a model: choose a provider, then send one of these example commands.",
-          "",
-          "These examples use models that already exist for those providers.",
-          "",
-          ...buildAddExamples(addableProviders).flatMap((example) => [
-            formatCopyableCommand(example),
-            "",
-          ]),
-          "Generic form:",
-          formatCopyableCommand("/models add <provider> <modelId>"),
-          "",
-          "Providers:",
-          ...addableProviders.map((provider) => `- ${provider}`),
-        ].join("\n"),
-        ...(channelData ? { channelData } : {}),
-      };
-    }
-
-    const validatedProvider = validateAddProvider({
-      cfg: params.cfg,
-      provider: parsed.provider,
-      discoveredProviders: providers,
-    });
-    if (!validatedProvider.ok) {
-      return {
-        text: [
-          `Unknown provider: ${parsed.provider}`,
-          "",
-          "Available providers:",
-          ...validatedProvider.providers.map((provider) => `- ${provider}`),
-          "",
-          "Use:",
-          "/models add <provider> <modelId>",
-        ].join("\n"),
-      };
-    }
-
-    if (!parsed.modelId) {
-      return {
-        text: [
-          `Add a model to ${validatedProvider.provider}:`,
-          "",
-          "Use:",
-          formatCopyableCommand(`/models add ${validatedProvider.provider} <modelId>`),
-          "",
-          "Browse current models:",
-          formatCopyableCommand(`/models ${validatedProvider.provider}`),
-        ].join("\n"),
-      };
-    }
-
-    const added = await addModelToConfig({
-      cfg: params.cfg,
-      provider: validatedProvider.provider,
-      modelId: parsed.modelId,
-    });
-    if (!added.ok) {
-      return {
-        text: `⚠️ ${added.error}`,
-      };
-    }
-
-    const modelRef = `${added.result.provider}/${added.result.modelId}`;
-    const warnings =
-      added.result.warnings.length > 0
-        ? ["", ...added.result.warnings.map((warning) => `- ${warning}`)]
-        : [];
-    const allowlistNote = added.result.allowlistAdded ? " and added to the allowlist" : "";
-    return {
-      text: [
-        added.result.existed
-          ? `✅ Model already exists: ${modelRef}${allowlistNote}.`
-          : `✅ Added model: ${modelRef}${allowlistNote}.`,
-        "Browse:",
-        `/models ${added.result.provider}`,
-        "",
-        "Switch now:",
-        `/model ${modelRef}`,
-        ...warnings,
-      ].join("\n"),
-    };
+    return { text: MODELS_ADD_DEPRECATED_TEXT };
   }
 
   const { provider, page, pageSize, all } = parsed;
@@ -481,7 +561,7 @@ export async function resolveModelsCommandReply(params: {
       };
     }
     return {
-      text: buildModelsMenuText({ providers, byProvider, includeAddAction: modelsWriteEnabled }),
+      text: buildModelsMenuText({ providers, byProvider }),
     };
   }
 
@@ -505,7 +585,9 @@ export async function resolveModelsCommandReply(params: {
     const emptyProviderLabel = resolveProviderLabel({
       provider,
       cfg: params.cfg,
+      agentId: params.agentId,
       agentDir: params.agentDir,
+      workspaceDir: params.workspaceDir,
       sessionEntry: params.sessionEntry,
     });
     return {
@@ -536,7 +618,9 @@ export async function resolveModelsCommandReply(params: {
         provider,
         total,
         cfg: params.cfg,
+        agentId: params.agentId,
         agentDir: params.agentDir,
+        workspaceDir: params.workspaceDir,
         sessionEntry: params.sessionEntry,
       }),
       channelData: interactiveChannelData,
@@ -564,7 +648,9 @@ export async function resolveModelsCommandReply(params: {
   const providerLabel = resolveProviderLabel({
     provider,
     cfg: params.cfg,
+    agentId: params.agentId,
     agentDir: params.agentDir,
+    workspaceDir: params.workspaceDir,
     sessionEntry: params.sessionEntry,
   });
   const lines = [
@@ -598,59 +684,7 @@ export const handleModelsCommand: CommandHandler = async (params, allowTextComma
   }
 
   if (parsed.action === "add") {
-    if (!isModelsWriteEnabled(params.cfg)) {
-      return {
-        shouldContinue: false,
-        reply: {
-          text: "⚠️ /models add is disabled. Set commands.modelsWrite=true to enable model registration.",
-        },
-      };
-    }
-    const commandLabel = "/models add";
-    const nonOwner = rejectNonOwnerCommand(params, commandLabel);
-    if (nonOwner) {
-      return nonOwner;
-    }
-    const missingAdminScope = requireGatewayClientScopeForInternalChannel(params, {
-      label: commandLabel,
-      allowedScopes: ["operator.admin"],
-      missingText: "❌ /models add requires operator.admin for gateway clients.",
-    });
-    if (missingAdminScope) {
-      return missingAdminScope;
-    }
-    const writeProvider = resolveWriteProvider({
-      cfg: params.cfg,
-      parsed,
-    });
-    if (writeProvider) {
-      const channelId = params.command.channelId ?? normalizeChannelId(params.command.channel);
-      const accountId = resolveChannelAccountId({
-        cfg: params.cfg,
-        ctx: params.ctx,
-        command: params.command,
-      });
-      for (const path of [
-        ["models", "providers", writeProvider],
-        ["models", "providers", writeProvider, "models"],
-        ["agents", "defaults", "models"],
-      ]) {
-        const deniedText = resolveConfigWriteDeniedText({
-          cfg: params.cfg,
-          channel: params.command.channel,
-          channelId,
-          accountId,
-          gatewayClientScopes: params.ctx.GatewayClientScopes,
-          target: resolveConfigWriteTargetFromPath(path),
-        });
-        if (deniedText) {
-          return {
-            shouldContinue: false,
-            reply: { text: deniedText },
-          };
-        }
-      }
-    }
+    return { shouldContinue: false, reply: { text: MODELS_ADD_DEPRECATED_TEXT } };
   }
 
   const modelsAgentId = params.sessionKey
@@ -673,6 +707,9 @@ export const handleModelsCommand: CommandHandler = async (params, allowTextComma
     currentModel: params.model ? `${params.provider}/${params.model}` : undefined,
     agentId: modelsAgentId,
     agentDir: modelsAgentDir,
+    workspaceDir:
+      targetSessionEntry?.spawnedWorkspaceDir ??
+      (modelsAgentId === currentAgentId ? params.workspaceDir : undefined),
     sessionEntry: targetSessionEntry,
   });
   if (!reply) {
