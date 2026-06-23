@@ -102,6 +102,18 @@ Present the plan to the user as a "用户交互流程描述" using everyday word
 这样创建可以吗？
 ```
 
+> **Structured UI (optional).** If trusted inbound metadata says the client
+> supports capability `a2ui:genskill.cards@1` or catalog `genskill.cards@1`,
+> render this "用户交互流程描述 + 这样创建可以吗？" as a `PlanConfirm` card
+> **instead of** the plain-text block above — read
+> `../genSkill/references/a2ui-emit-guide.md` for the exact `PlanConfirm` fields
+> (`taskTitle` = the goal; `items[]` = the 6 plain-language lines 你给我 / 我会 /
+> 开始方式 / 完成后 / 如果缺东西 / 我不会做的事; `question` = "这样创建可以吗？";
+> `confirmAction`). Emit the card only; do not also output the same numbered prose
+> outside the block. If the client does not advertise that capability, keep the
+> plain-text form exactly as above. Same content, same approval answer — only the
+> rendering changes.
+
 ### Plain-Language Rules
 
 - No system terms. "记忆边界" → "我会记住做法本身，但不会保存你每次给我的具体内容"
