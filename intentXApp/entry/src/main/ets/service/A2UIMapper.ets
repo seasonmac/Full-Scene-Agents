@@ -1,5 +1,5 @@
 /**
- * A2UIMapper — convert validated A2UI components (intentx.app:cards@1) into the
+ * A2UIMapper — convert validated A2UI components (genskill.cards@1) into the
  * existing UIBlock model so the 6 prebuilt cards render unchanged.
  *
  * Only called on components that already passed A2UIComponentValidator.
@@ -57,6 +57,7 @@ export class A2UIMapper {
     b.preamble = A2UIMapper.str(comp, 'preamble');
     b.question = A2UIMapper.str(comp, 'question');
     b.questionIndex = A2UIMapper.num(comp, 'questionIndex', 1);
+    b.totalQuestions = A2UIMapper.num(comp, 'totalQuestions', 0);
     const opts = A2UIMapper.arr(comp, 'options');
     for (let i = 0; i < opts.length; i++) {
       const o = opts[i] as Record<string, Object>;
@@ -73,7 +74,8 @@ export class A2UIMapper {
     const b = new UIBlock();
     b.kind = 'approach-proposal';
     b.phase = 'clarify';
-    b.preamble = A2UIMapper.str(comp, 'preamble');
+    // Models emit the lead-in as either `preamble` (emit-guide) or `intro`.
+    b.preamble = A2UIMapper.strAny(comp, ['preamble', 'intro']);
     b.recommendedId = A2UIMapper.str(comp, 'recommendedId');
     const apps = A2UIMapper.arr(comp, 'approaches');
     for (let i = 0; i < apps.length; i++) {
@@ -81,7 +83,8 @@ export class A2UIMapper {
       const item = new ApproachItem();
       item.id = A2UIMapper.str(a, 'id');
       item.title = A2UIMapper.str(a, 'title');
-      item.body = A2UIMapper.str(a, 'body');
+      // Per-approach explanation is `body` (emit-guide) or `description`.
+      item.body = A2UIMapper.strAny(a, ['body', 'description']);
       b.approaches.push(item);
     }
     return b;
@@ -155,6 +158,17 @@ export class A2UIMapper {
   static str(obj: Record<string, Object>, key: string): string {
     const v = obj[key];
     return typeof v === 'string' ? v as string : '';
+  }
+
+  /** First non-empty string among several accepted keys (tolerates model field-name synonyms). */
+  static strAny(obj: Record<string, Object>, keys: string[]): string {
+    for (let i = 0; i < keys.length; i++) {
+      const v = obj[keys[i]];
+      if (typeof v === 'string' && (v as string).length > 0) {
+        return v as string;
+      }
+    }
+    return '';
   }
 
   static num(obj: Record<string, Object>, key: string, fallback: number): number {

@@ -10,7 +10,9 @@ export struct ApproachProposalCard {
   @ObjectLink block: UIBlock;
   @Prop isLocked: boolean = false;
   @Prop canInteract: boolean = true;
+  @Prop hideActions: boolean = false;
   onConfirmOption: (id: string, label: string) => void = (id: string, label: string) => {};
+  onSelectOption: (id: string, label: string) => void = (id: string, label: string) => {};
 
   @State localSelected: string = '';
 
@@ -56,7 +58,7 @@ export struct ApproachProposalCard {
       .width('100%')
       .padding({ left: 16, right: 16, top: 12, bottom: 12 });
 
-      if (!this.isLocked) {
+      if (!this.isLocked && !this.hideActions) {
         Button({ type: ButtonType.Normal }) {
           Text(this.effectiveSelected().length > 0 ? `确认方案 ${this.effectiveSelected()}` : '请选择一个方案')
             .fontSize(15)
@@ -153,6 +155,7 @@ export struct ApproachProposalCard {
         return;
       }
       this.localSelected = a.id;
+      this.onSelectOption(a.id, a.id);
     });
   }
 }

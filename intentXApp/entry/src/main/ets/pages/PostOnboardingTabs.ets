@@ -15,6 +15,7 @@ export struct PostOnboardingTabs {
   @ObjectLink viewModel: MainViewModel;
   @StorageProp('localeVersion') localeVersion: number = 0;
   @StorageLink('pendingActiveTab') @Watch('applyPendingTab') pendingActiveTab: number = -1;
+  @StorageLink('chatWorkbenchOpen') chatWorkbenchOpen: boolean = false;
 
   @State activeTab: number = 0;
   @State connectedState: boolean = false;
@@ -79,7 +80,9 @@ export struct PostOnboardingTabs {
       .width('100%')
       .layoutWeight(1);
 
-      this.TabBar();
+      if (!this.chatWorkbenchOpen) {
+        this.TabBar();
+      }
     }
     .width('100%')
     .height('100%')

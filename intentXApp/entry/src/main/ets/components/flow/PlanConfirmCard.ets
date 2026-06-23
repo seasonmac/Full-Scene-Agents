@@ -10,6 +10,7 @@ export struct PlanConfirmCard {
   @ObjectLink block: UIBlock;
   @Prop isLocked: boolean = false;
   @Prop canInteract: boolean = true;
+  @Prop hideActions: boolean = false;
   onConfirm: () => void = () => {};
   onModify: () => void = () => {};
 
@@ -57,7 +58,7 @@ export struct PlanConfirmCard {
           }
           .width('100%')
           .padding({ left: 16, right: 16, top: 12, bottom: 12 });
-        } else {
+        } else if (!this.hideActions) {
           Text(this.block.question)
             .fontSize(14)
             .fontWeight(FontWeight.Medium)

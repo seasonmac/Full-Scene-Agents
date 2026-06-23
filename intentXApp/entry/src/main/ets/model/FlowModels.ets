@@ -69,6 +69,7 @@ export class UIBlock {
   options: ClarifyOption[] = [];
   selectedId: string = '';
   questionIndex: number = 0;
+  totalQuestions: number = 0;
 
   // approach-proposal
   approaches: ApproachItem[] = [];

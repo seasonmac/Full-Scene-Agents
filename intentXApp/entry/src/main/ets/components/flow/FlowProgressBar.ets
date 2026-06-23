@@ -8,6 +8,19 @@ import { FlowColors } from '../../common/FlowColors';
 @Component
 export struct FlowProgressBar {
   @Prop activePhase: string = 'clarify';
+  @State pulseOpacity: number = 1;
+
+  aboutToAppear(): void {
+    // 当前段呼吸动画（01 文档 §3.1：当前段加 1.8s 呼吸 opacity 动画）。
+    this.getUIContext().animateTo({
+      duration: 1800,
+      curve: Curve.EaseInOut,
+      iterations: -1,
+      playMode: PlayMode.Alternate
+    }, () => {
+      this.pulseOpacity = 0.45;
+    });
+  }
 
   private phaseLabel(phase: string): string {
     switch (phase) {
@@ -58,7 +71,8 @@ export struct FlowProgressBar {
             .height(3)
             .layoutWeight(1)
             .borderRadius(2)
-            .backgroundColor(i <= this.activeIndex() ? FlowColors.AGENT_BLUE : '#D6E0F5');
+            .backgroundColor(i <= this.activeIndex() ? FlowColors.AGENT_BLUE : '#D6E0F5')
+            .opacity(i === this.activeIndex() ? this.pulseOpacity : 1);
         }, (phase: string) => phase);
       }
       .width('100%');

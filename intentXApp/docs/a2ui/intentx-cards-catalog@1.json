@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "intentx.app:cards@1",
-  "title": "IntentX Cards Catalog (A2UI 0.9 custom catalog)",
-  "description": "A custom A2UI catalog whose components are the 6 prebuilt native cards rendered by intentXApp ChatPage. This catalog intentionally does NOT include any A2UI standard components (Text/Row/Column/Button/etc). The agent emits a single root component per surface; the client maps it directly to a native ArkTS card. catalogId for createSurface messages: 'intentx.app:cards@1'.",
+  "$id": "genskill.cards@1",
+  "title": "genSkill Cards Catalog (A2UI 0.9 custom catalog)",
+  "description": "The genSkill A2UI card catalog implemented by intentXApp ChatPage as native cards. This catalog intentionally does NOT include any A2UI standard components (Text/Row/Column/Button/etc). The agent emits a single root component per surface; this client maps it directly to a native ArkTS card. catalogId for createSurface messages: 'genskill.cards@1'.",
   "$defs": {
     "anyComponent": {
       "oneOf": [

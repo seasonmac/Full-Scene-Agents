@@ -64,7 +64,7 @@ export class GatewayClientInfo {
 export class GatewayConnectOptions {
   role: string = 'operator';
   scopes: string[] = [];
-  caps: string[] = [];
+  caps: string[] = ['a2ui:genskill.cards@1'];
   commands: string[] = [];
   permissions: Record<string, boolean> = {};
   client: GatewayClientInfo = new GatewayClientInfo();
@@ -312,7 +312,7 @@ export class GatewaySession extends GatewaySessionLike {
     const options = new GatewayConnectOptions();
     options.role = 'operator';
     options.scopes = ['operator.read', 'operator.write', 'operator.talk.secrets'];
-    options.caps = [];
+    options.caps = ['a2ui:genskill.cards@1'];
     options.commands = [];
     options.client.mode = 'ui';
     return options;

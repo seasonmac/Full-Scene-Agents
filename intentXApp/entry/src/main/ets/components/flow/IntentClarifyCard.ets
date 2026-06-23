@@ -9,29 +9,29 @@ import { FlowColors } from '../../common/FlowColors';
 @Component
 export struct IntentClarifyCard {
   @ObjectLink block: UIBlock;
-  @Prop totalQuestions: number = 1;
+  @Prop selectedIdOverride: string = '';
+  @Prop useSelectedIdOverride: boolean = false;
   @Prop isLocked: boolean = false;
   @Prop canInteract: boolean = true;
+  @Prop hideActions: boolean = false;
   // (optionId, optionLabel) => void
   onConfirmOption: (id: string, label: string) => void = (id: string, label: string) => {};
+  onSelectOption: (id: string, label: string) => void = (id: string, label: string) => {};
 
   @State localSelected: string = '';
 
   aboutToAppear(): void {
-    this.localSelected = this.block.selectedId;
+    this.localSelected = this.useSelectedIdOverride ? this.selectedIdOverride : this.block.selectedId;
   }
 
   private effectiveSelected(): string {
+    if (this.useSelectedIdOverride) {
+      return this.selectedIdOverride;
+    }
     if (this.block.selectedId.length > 0) {
       return this.block.selectedId;
     }
     return this.localSelected;
-  }
-
-  private progressPct(): number {
-    const idx = this.block.questionIndex;
-    const total = this.totalQuestions > 0 ? this.totalQuestions : 1;
-    return Math.min(100, (idx / total) * 100);
   }
 
   build() {
@@ -48,27 +48,9 @@ export struct IntentClarifyCard {
         .padding({ left: 10, right: 10, top: 3, bottom: 3 })
         .backgroundColor(FlowColors.AGENT_BLUE_LIGHT)
         .borderRadius(999);
-
-        Blank();
-
-        Text(`${this.block.questionIndex}/${this.totalQuestions}`)
-          .fontSize(12)
-          .fontColor(FlowColors.MUTED_FG);
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 12, bottom: 8 });
-
-      // 细进度条
-      Row() {
-        Stack()
-          .height(2)
-          .width(`${this.progressPct()}%`)
-          .backgroundColor(FlowColors.AGENT_BLUE);
-      }
-      .width('100%')
-      .height(2)
-      .backgroundColor(FlowColors.MUTED)
-      .justifyContent(FlexAlign.Start);
 
       // 问题
       Text(this.block.question)
@@ -80,7 +62,7 @@ export struct IntentClarifyCard {
         .padding({ left: 16, right: 16, top: 12, bottom: 8 });
 
       // 选项列表
-      Column({ space: 8 }) {
+      Column({ space: 6 }) {
         ForEach(this.block.options, (opt: ClarifyOption) => {
           this.OptionRow(opt);
         }, (opt: ClarifyOption) => opt.id + '|' + opt.label);
@@ -89,7 +71,7 @@ export struct IntentClarifyCard {
       .padding({ left: 16, right: 16, bottom: 12 });
 
       // 确认按钮 / 锁定态
-      if (!this.isLocked) {
+      if (!this.isLocked && !this.hideActions) {
         Button({ type: ButtonType.Normal }) {
           Text('确认选择')
             .fontSize(15)
@@ -165,7 +147,7 @@ export struct IntentClarifyCard {
     }
     .width('100%')
     .alignItems(VerticalAlign.Top)
-    .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+    .padding({ left: 12, right: 12, top: 9, bottom: 9 })
     .backgroundColor(this.effectiveSelected() === opt.id ? FlowColors.AGENT_BLUE_MUTED : FlowColors.CARD)
     .borderRadius(12)
     .border({
@@ -177,6 +159,7 @@ export struct IntentClarifyCard {
         return;
       }
       this.localSelected = opt.id;
+      this.onSelectOption(opt.id, opt.label);
     });
   }
 

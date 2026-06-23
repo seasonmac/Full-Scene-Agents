@@ -49,6 +49,9 @@ class ChatSessionsListParams {
   limit?: number = undefined;
 }
 
+class ChatSessionCreateParams {
+}
+
 class ChatPayloadObject {
 }
 
@@ -979,6 +982,7 @@ export class MainViewModel {
       } else {
         this.clearChatPendingRuns();
       }
+      this.flushPendingA2UIErrorFeedback();
 
       this.chatStreamingAssistantText = null;
       this.chatPendingToolCalls = [];
@@ -1736,6 +1740,37 @@ export class MainViewModel {
     this.fetchChatSessions(limit);
   }
 
+  createChatSession(): void {
+    if (!this.isConnected || !this.operatorSession) {
+      this.chatError = this.getLocalizedString('chat_error_not_connected_chat', 'Connect to a gateway before chatting.');
+      this.notifyChatStateChanged();
+      return;
+    }
+
+    this.chatError = null;
+    const requestParams = new ChatSessionCreateParams();
+    this.operatorSession.request('sessions.create', JSON.stringify(requestParams)).then((response) => {
+      if (!response.result.success) {
+        throw new Error(response.error?.message || this.getLocalizedString('chat_error_sessions_load_failed', 'Unable to load chat sessions.'));
+      }
+
+      const payload = this.readPayloadObject(response.payload);
+      const rawSessionKey = this.readOptionalString(payload, 'key');
+      if (rawSessionKey.trim().length === 0) {
+        throw new Error(this.getLocalizedString('chat_error_sessions_load_failed', 'Unable to load chat sessions.'));
+      }
+      const sessionKey = this.normalizeChatSessionKey(rawSessionKey);
+
+      this.switchChatSession(sessionKey);
+      this.fetchChatSessions(200);
+    }).catch((error: Error) => {
+      this.chatError = error instanceof Error
+        ? error.message
+        : this.getLocalizedString('chat_error_sessions_load_failed', 'Unable to load chat sessions.');
+      this.notifyChatStateChanged();
+    });
+  }
+
   setChatThinkingLevel(level: string): void {
     this.chatThinkingLevel = this.normalizeChatThinkingLevel(level);
     this.notifyChatStateChanged();
@@ -1772,7 +1807,7 @@ export class MainViewModel {
     }
   }
 
-  sendChat(message: string, thinking: string, attachments: OutgoingAttachment[], displayMessage?: string, sessionKey?: string): void {
+  sendChat(message: string, thinking: string, attachments: OutgoingAttachment[], displayMessage?: string, sessionKey?: string, silent?: boolean): void {
     const trimmedMessage = message.trim();
     if (trimmedMessage.length === 0 && attachments.length === 0) {
       return;
@@ -1787,24 +1822,26 @@ export class MainViewModel {
     this.chatThinkingLevel = this.normalizeChatThinkingLevel(thinking);
 
     const now = Date.now();
-    const userMessage = new ChatMessage();
-    userMessage.stableKey = 'local|' + String(now) + '|' + this.createChatRunId();
-    userMessage.role = 'user';
     const outgoingText = trimmedMessage.length > 0 ? trimmedMessage : this.getLocalizedString('chat_see_attached', 'See attached.');
-    const visibleText = displayMessage && displayMessage.trim().length > 0 ? displayMessage.trim() : outgoingText;
-    userMessage.content = [this.createTextContent(visibleText)];
-    // 带附件时，为每张图片构建本地缩略图 content block（data URL）
-    if (attachments.length > 0) {
-      for (let attachment of attachments) {
-        if (attachment.type === 'image' && attachment.content.length > 0) {
-          const dataUrl = 'data:' + attachment.mimeType + ';base64,' + attachment.content;
-          userMessage.content.push(this.createImageContent(dataUrl));
+    const isSilent = silent === true;
+    if (!isSilent) {
+      const userMessage = new ChatMessage();
+      userMessage.stableKey = 'local|' + String(now) + '|' + this.createChatRunId();
+      userMessage.role = 'user';
+      const visibleText = displayMessage && displayMessage.trim().length > 0 ? displayMessage.trim() : outgoingText;
+      userMessage.content = [this.createTextContent(visibleText)];
+      // 带附件时，为每张图片构建本地缩略图 content block（data URL）
+      if (attachments.length > 0) {
+        for (let attachment of attachments) {
+          if (attachment.type === 'image' && attachment.content.length > 0) {
+            const dataUrl = 'data:' + attachment.mimeType + ';base64,' + attachment.content;
+            userMessage.content.push(this.createImageContent(dataUrl));
+          }
         }
       }
+      this.chatMessages = [...this.chatMessages, userMessage];
+      this.appendChatTurn('user', outgoingText);
     }
-
-    this.chatMessages = [...this.chatMessages, userMessage];
-    this.appendChatTurn('user', outgoingText);
     this.chatStreamingAssistantText = null;
     this.chatPendingToolCalls = [];
     this.chatPendingInteractions = [];
@@ -2207,16 +2244,24 @@ export class MainViewModel {
       lines.push('- ' + errors[i].path + ': ' + errors[i].message);
     }
     const feedback = 'A2UI 校验未通过，请仅修正以下问题并重新输出单条 ```a2ui 代码块（catalogId 必须是 '
-      + 'intentx.app:cards@1，组件只能用 ClarifyQuestion/ApproachProposal/PlanConfirm/SkillCreate/ExecuteSummary/AgentText）：\n'
+      + 'genskill.cards@1，组件只能用 ClarifyQuestion/ApproachProposal/PlanConfirm/SkillCreate/ExecuteSummary/AgentText）：\n'
       + lines.join('\n');
     this.pendingA2UIErrorFeedback = feedback;
     console.warn('MainViewModel: A2UI validation failed:\n' + feedback);
 
-    // 自动回灌一次（避免无限循环）。仅在已连接且空闲时。
-    if (!this.a2uiAutoRetryUsed && this.isConnected && this.pendingRunCount === 0) {
-      this.a2uiAutoRetryUsed = true;
-      this.sendChat(feedback, this.chatThinkingLevel, []);
+    this.flushPendingA2UIErrorFeedback();
+  }
+
+  // 自动回灌一次（避免无限循环）。如果当前 run 尚未清理，final 分支清理后会再次 flush。
+  private flushPendingA2UIErrorFeedback(): void {
+    const feedback = this.pendingA2UIErrorFeedback.trim();
+    if (feedback.length === 0 || this.a2uiAutoRetryUsed || !this.isConnected || this.pendingRunCount > 0) {
+      return;
     }
+    this.pendingA2UIErrorFeedback = '';
+    this.a2uiAutoRetryUsed = true;
+    // 静默回灌：错误反馈发回 LLM 触发重生成，但不在对话流中显示为可见气泡。
+    this.sendChat(feedback, this.chatThinkingLevel, [], undefined, undefined, true);
   }
 
   private reparseChatFlow(): void {

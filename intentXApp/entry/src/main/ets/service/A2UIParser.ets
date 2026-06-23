@@ -1,6 +1,6 @@
 /**
  * A2UIParser — extract inline A2UI JSON from an assistant message, validate it
- * against the intentx.app:cards@1 catalog, and map valid messages to UIBlock.
+ * against the genskill.cards@1 catalog, and map valid messages to UIBlock.
  *
  * Directive 1: the agent emits A2UI inline in the chat stream — either a fenced
  *   ```a2ui … ``` block (preferred) or bare JSONL lines. No canvas.a2ui.push.
@@ -13,11 +13,25 @@ import { A2UI_CATALOG_ID, A2UIMessage, A2UIScanResult, A2UIValidationError } fro
 import { A2UIComponentValidator } from './A2UIComponentValidator';
 
 export class A2UIParser {
+  /** Matches the catalog marker `"catalogId":"genskill.cards@1"` (whitespace-tolerant). */
+  private static readonly CATALOG_MARKER = new RegExp('"catalogId"\\s*:\\s*"' + A2UI_CATALOG_ID.replace('.', '\\.') + '"');
+
   /** Scan one assistant message for inline A2UI; validate; return messages + errors + residual text. */
   static scan(text: string): A2UIScanResult {
     const result = new A2UIScanResult();
     if (!text || text.length === 0) {
       result.residualText = text || '';
+      return result;
+    }
+
+    // Gate: a message only carries A2UI worth validating if it has a fenced ```a2ui block
+    // OR explicitly tags the genskill catalog. Otherwise treat as plain text — never
+    // mis-fire validation on casual replies (e.g. "hello") or prose that happens to start
+    // with an envelope key. The catalogId marker is the single trusted signal.
+    const hasFence = text.indexOf('```a2ui') >= 0;
+    const hasCatalog = A2UIParser.CATALOG_MARKER.test(text);
+    if (!hasFence && !hasCatalog) {
+      result.residualText = text;
       return result;
     }
 
@@ -157,7 +171,7 @@ export class A2UIParser {
     }
 
     if (kind === 'updateDataModel') {
-      // Not used by intentx.app:cards@1 (cards are self-contained); ignore silently.
+      // Not used by genskill.cards@1 (cards are self-contained); ignore silently.
       return;
     }
 

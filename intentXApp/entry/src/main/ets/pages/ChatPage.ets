@@ -7,6 +7,8 @@ import { ApproachProposalCard } from '../components/flow/ApproachProposalCard';
 import { PlanConfirmCard } from '../components/flow/PlanConfirmCard';
 import { SkillCreateCard } from '../components/flow/SkillCreateCard';
 import { ExecuteSummaryCard } from '../components/flow/ExecuteSummaryCard';
+import { PhaseStage } from '../components/flow/PhaseStage';
+import { PhotoCaptureService, PhotoResult } from '../service/PhotoCaptureService';
 import { Markdown, MarkdownController } from '@luvi/lv-markdown-in';
 import { pasteboard } from '@kit.BasicServicesKit';
 
@@ -29,6 +31,7 @@ const C_INPUT_BG: string = '#EFF4FF';
 export struct ChatPage {
   @ObjectLink viewModel: MainViewModel;
   @StorageProp('localeVersion') localeVersion: number = 0;
+  @StorageLink('chatWorkbenchOpen') chatWorkbenchOpen: boolean = false;
 
   @State messageText: string = '';
   @State showThinkingOptions: boolean = false;
@@ -52,11 +55,23 @@ export struct ChatPage {
   // chat-ux 结构化流程
   @State flowBlocksState: UIBlock[] = [];
   @State flowPhaseState: string = '';
-  @State flowTotalQuestionsState: number = 1;
+  @State pendingGenSkillWorkbenchOpen: boolean = false;
+  @State pendingGenSkillWorkbenchToken: string = '';
+  @State pendingGenSkillPreviousWorkbenchToken: string = '';
+  @State workbenchOpen: boolean = false;
+  @State workbenchReady: boolean = false;
+  @State workbenchBlockToken: string = '';
+  @State dismissedWorkbenchToken: string = '';
+  @State workbenchSelectedId: string = '';
+  @State workbenchSelectedLabel: string = '';
+  @State workbenchSkipThinking: boolean = false;
+  @State workbenchActiveBlock: UIBlock = new UIBlock();
+  private settledWorkbenchTokens: Set<string> = new Set();
 
   private chatStateListenerId: number = -1;
   private messageScroller: Scroller = new Scroller();
   private lastScrollToken: string = '';
+  private emptyWorkbenchBlock: UIBlock = new UIBlock();
   private streamingMarkdownController: MarkdownController = new MarkdownController();
   private userMarkdownController: MarkdownController = new MarkdownController();
   private openclawMarkdownController: MarkdownController = new MarkdownController();
@@ -74,6 +89,7 @@ export struct ChatPage {
   }
 
   aboutToDisappear(): void {
+    this.publishWorkbenchVisibility(false);
     if (this.chatStateListenerId >= 0) {
       this.viewModel.removeChatStateListener(this.chatStateListenerId);
       this.chatStateListenerId = -1;
@@ -81,22 +97,28 @@ export struct ChatPage {
   }
 
   build() {
-    Column() {
-      this.ChatHeader();
-      this.HeaderSessionPanel();
-      this.WorkflowProgress();
+    Stack() {
+      Column() {
+        this.ChatHeader();
+        this.HeaderSessionPanel();
+        this.WorkflowProgress();
 
-      if (this.chatErrorState.length > 0) {
-        this.ChatErrorRail(this.chatErrorState);
+        if (this.chatErrorState.length > 0) {
+          this.ChatErrorRail(this.chatErrorState);
+        }
+
+        this.MessagesList();
+        this.Composer();
       }
+      .width('100%')
+      .height('100%')
+      .padding({ left: 16, right: 16 })
+      .backgroundColor(C_BG);
 
-      this.MessagesList();
-      this.Composer();
+      this.FlowWorkbenchOverlay();
     }
     .width('100%')
-    .height('100%')
-    .padding({ left: 16, right: 16 })
-    .backgroundColor(C_BG);
+    .height('100%');
   }
 
   @Builder ChatHeader() {
@@ -166,8 +188,35 @@ export struct ChatPage {
 
   @Builder WorkflowProgress() {
     if (this.shouldShowWorkflowProgress()) {
-      FlowProgressBar({ activePhase: this.currentWorkflowPhase() })
-        .margin({ bottom: 8 });
+      Column({ space: 8 }) {
+        FlowProgressBar({ activePhase: this.currentWorkflowPhase() });
+
+        if (this.shouldShowWorkbenchLauncher()) {
+          Button({ type: ButtonType.Normal }) {
+            Row({ space: 6 }) {
+              Text('›')
+                .fontSize(18)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(C_ACCENT_FG);
+              Text('打开沉浸式操作面板')
+                .fontSize(13)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(C_ACCENT_FG);
+            }
+            .justifyContent(FlexAlign.Center)
+            .width('100%');
+          }
+          .width('100%')
+          .height(38)
+          .backgroundColor(C_ACCENT)
+          .borderRadius(12)
+          .onClick(() => {
+            this.openWorkbenchFromLauncher();
+          });
+        }
+      }
+      .width('100%')
+      .margin({ bottom: 8 });
     }
   }
 
@@ -262,9 +311,44 @@ export struct ChatPage {
     return this.hasStructuredFlow() && this.currentWorkflowPhase().length > 0;
   }
 
+  private shouldShowWorkbenchLauncher(): boolean {
+    return this.hasActiveWorkbenchBlock() && !this.workbenchOpen;
+  }
+
+  private openWorkbenchFromLauncher(): void {
+    const token = this.activeWorkbenchBlockToken();
+    if (token.length === 0) {
+      return;
+    }
+    this.dismissedWorkbenchToken = '';
+    this.workbenchBlockToken = token;
+    this.settledWorkbenchTokens.add(token);
+    this.workbenchSkipThinking = true;
+    this.workbenchReady = true;
+    this.setWorkbenchOpen(true);
+  }
+
+  private presentActiveWorkbenchOnEntry(): void {
+    const token = this.activeWorkbenchBlockToken();
+    if (token.length === 0) {
+      return;
+    }
+    this.dismissedWorkbenchToken = '';
+    if (this.workbenchBlockToken.length === 0 || this.workbenchBlockToken === token) {
+      this.workbenchBlockToken = token;
+      const alreadySettled = this.settledWorkbenchTokens.has(token);
+      this.workbenchSkipThinking = alreadySettled;
+      this.workbenchReady = alreadySettled;
+      this.setWorkbenchOpen(true);
+    }
+  }
+
   private currentWorkflowPhase(): string {
     if (this.flowPhaseState.length > 0) {
       return this.flowPhaseState;
+    }
+    if (this.hasPendingGenSkillWorkbench()) {
+      return 'clarify';
     }
     for (let i = this.flowBlocksState.length - 1; i >= 0; i--) {
       const phase = this.flowBlocksState[i].phase;
@@ -309,9 +393,9 @@ export struct ChatPage {
       Row() {
         IntentClarifyCard({
           block: block,
-          totalQuestions: this.flowTotalQuestionsState,
-          isLocked: !this.isLiveBlock(block, index),
-          canInteract: this.isLiveBlock(block, index),
+          isLocked: true,
+          canInteract: false,
+          hideActions: true,
           onConfirmOption: (id: string, label: string) => {
             this.sendFlowOption(label);
           }
@@ -324,8 +408,9 @@ export struct ChatPage {
       Row() {
         ApproachProposalCard({
           block: block,
-          isLocked: !this.isLiveBlock(block, index),
-          canInteract: this.isLiveBlock(block, index),
+          isLocked: true,
+          canInteract: false,
+          hideActions: true,
           onConfirmOption: (id: string, label: string) => {
             this.sendFlowOption(id);
           }
@@ -338,8 +423,9 @@ export struct ChatPage {
       Row() {
         PlanConfirmCard({
           block: block,
-          isLocked: !this.isLiveBlock(block, index),
-          canInteract: this.isLiveBlock(block, index),
+          isLocked: true,
+          canInteract: false,
+          hideActions: true,
           onConfirm: () => {
             this.sendFlowOption('可以');
           },
@@ -364,7 +450,7 @@ export struct ChatPage {
           block: block,
           canInteract: this.chatHealthOkState && this.pendingRunCountState === 0,
           onCta: () => {
-            this.showSkillLaunchers = false;
+            this.launchSummaryCta();
           }
         })
           .width('86%');
@@ -424,6 +510,290 @@ export struct ChatPage {
     }
     this.suppressComposerInputFocusRestore();
     this.viewModel.sendChat(text, this.chatThinkingLevelState, []);
+  }
+
+  // ---------- 沉浸式阶段工作台（A2UI UX layer） ----------
+
+  @Builder FlowWorkbenchOverlay() {
+    if (this.workbenchOpen && (this.hasActiveWorkbenchBlock() || this.hasPendingGenSkillWorkbench())) {
+      Stack({ alignContent: Alignment.Bottom }) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#66000000')
+          .transition(TransitionEffect.OPACITY.animation({ duration: 280, curve: Curve.EaseInOut }))
+          .onClick(() => {
+            if (this.canDismissWorkbench()) {
+              this.dismissWorkbench();
+            }
+          });
+
+        this.FlowWorkbenchSheet();
+      }
+      .width('100%')
+      .height('100%');
+    }
+  }
+
+  @Builder FlowWorkbenchSheet() {
+    Column() {
+      Column()
+        .width(38)
+        .height(4)
+        .backgroundColor(this.canDismissWorkbench() ? '#D1D5DB' : '#00000000')
+        .borderRadius(999)
+        .margin({ top: 10, bottom: 8 });
+
+      Row({ space: 12 }) {
+        Column({ space: 3 }) {
+          Text(this.workbenchTitle(this.currentWorkflowPhase()))
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(C_FOREGROUND)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis });
+
+          Text(this.workbenchSubtitle(this.currentWorkflowPhase()))
+            .fontSize(12)
+            .fontColor(C_MUTED_FG)
+            .lineHeight(17)
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis });
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start);
+
+        if (this.canDismissWorkbench()) {
+          Button({ type: ButtonType.Circle }) {
+            Text('×')
+              .fontSize(18)
+              .fontColor(C_MUTED_FG);
+          }
+          .width(34)
+          .height(34)
+          .backgroundColor(C_MUTED)
+          .onClick(() => {
+            this.dismissWorkbench();
+          });
+        }
+      }
+      .width('100%')
+      .padding({ left: 20, right: 20, bottom: 12 });
+
+      Scroll() {
+        Column() {
+          PhaseStage({
+            settleToken: this.hasPendingGenSkillWorkbench() ? this.pendingGenSkillWorkbenchToken : this.workbenchBlockToken,
+            phase: this.currentWorkflowPhase(),
+            skipThinking: this.workbenchSkipThinking,
+            onReady: () => {
+              this.workbenchReady = true;
+            }
+          }) {
+            if (this.hasPendingGenSkillWorkbench()) {
+              this.PendingGenSkillWorkbenchContent();
+            } else {
+              this.FlowWorkbenchContent();
+            }
+          }
+        }
+        .width('100%')
+        .padding({ left: 20, right: 20, bottom: 16 });
+      }
+      .width('100%')
+      .constraintSize({ maxHeight: '62%' });
+
+      if (!this.hasPendingGenSkillWorkbench()) {
+        this.FlowWorkbenchFooter();
+      }
+    }
+    .width('100%')
+    .constraintSize({ maxHeight: '90%' })
+    .backgroundColor(C_CARD)
+    .borderRadius({ topLeft: 28, topRight: 28, bottomLeft: 0, bottomRight: 0 })
+    .shadow({ radius: 24, color: '#33000000', offsetX: 0, offsetY: -8 })
+    .clip(true)
+    .transition(TransitionEffect.translate({ y: '100%' })
+      .animation({ duration: 340, curve: Curve.ExtremeDeceleration }));
+  }
+
+  @Builder FlowWorkbenchContent() {
+    if (this.workbenchActiveBlock.kind === 'clarify-question') {
+      IntentClarifyCard({
+        block: this.workbenchActiveBlock,
+        selectedIdOverride: this.workbenchSelectedId,
+        useSelectedIdOverride: true,
+        isLocked: false,
+        canInteract: this.workbenchReady && this.chatHealthOkState && this.pendingRunCountState === 0,
+        hideActions: true,
+        onConfirmOption: (id: string, label: string) => {
+          this.sendFlowOption(label);
+        },
+        onSelectOption: (id: string, label: string) => {
+          this.workbenchSelectedId = id;
+          this.workbenchSelectedLabel = label;
+        }
+      })
+        .width('100%');
+    } else if (this.workbenchActiveBlock.kind === 'approach-proposal') {
+      ApproachProposalCard({
+        block: this.workbenchActiveBlock,
+        isLocked: false,
+        canInteract: this.workbenchReady && this.chatHealthOkState && this.pendingRunCountState === 0,
+        hideActions: true,
+        onConfirmOption: (id: string, label: string) => {
+          this.sendFlowOption(id);
+        },
+        onSelectOption: (id: string, label: string) => {
+          this.workbenchSelectedId = id;
+          this.workbenchSelectedLabel = label;
+        }
+      })
+        .width('100%');
+    } else if (this.workbenchActiveBlock.kind === 'plan-confirm') {
+      PlanConfirmCard({
+        block: this.workbenchActiveBlock,
+        isLocked: false,
+        canInteract: this.workbenchReady && this.chatHealthOkState && this.pendingRunCountState === 0,
+        hideActions: true,
+        onConfirm: () => {
+          this.sendFlowOption('可以');
+        },
+        onModify: () => {
+          this.composerInputVisible = true;
+          this.dismissWorkbench();
+        }
+      })
+        .width('100%');
+    } else if (this.workbenchActiveBlock.kind === 'skill-create') {
+      SkillCreateCard({ block: this.workbenchActiveBlock })
+        .width('100%');
+    } else if (this.workbenchActiveBlock.kind === 'exec-summary') {
+      ExecuteSummaryCard({
+        block: this.workbenchActiveBlock,
+        canInteract: this.workbenchReady && this.chatHealthOkState && this.pendingRunCountState === 0,
+        onCta: () => {
+          this.launchSummaryCta();
+        }
+      })
+        .width('100%');
+    } else {
+      this.FlowAgentBubble(this.workbenchActiveBlock.markdown || this.workbenchActiveBlock.text);
+    }
+  }
+
+  @Builder PendingGenSkillWorkbenchContent() {
+    Column({ space: 10 }) {
+      Text('正在准备问题…')
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(C_FOREGROUND);
+      Text('稍后会在这里显示需要你选择的题目')
+        .fontSize(12)
+        .fontColor(C_MUTED_FG)
+        .lineHeight(17);
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .padding({ left: 16, right: 16, top: 16, bottom: 16 })
+    .backgroundColor(C_CARD)
+    .borderRadius(18)
+    .border({ width: 1, color: C_BORDER });
+  }
+
+  @Builder FlowWorkbenchFooter() {
+    Column() {
+      if (this.workbenchActiveBlock.kind === 'clarify-question') {
+        Button('确认选择')
+          .width('100%')
+          .height(44)
+          .fontSize(15)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#FFFFFF')
+          .backgroundColor(this.canSubmitWorkbenchBlock(this.workbenchActiveBlock) ? C_PRIMARY : C_MUTED)
+          .borderRadius(12)
+          .enabled(this.canSubmitWorkbenchBlock(this.workbenchActiveBlock))
+          .onClick(() => {
+            this.submitWorkbenchBlock(this.workbenchActiveBlock);
+          });
+      } else if (this.workbenchActiveBlock.kind === 'approach-proposal') {
+        Button('确认方案')
+          .width('100%')
+          .height(44)
+          .fontSize(15)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#FFFFFF')
+          .backgroundColor(this.canSubmitWorkbenchBlock(this.workbenchActiveBlock) ? C_PRIMARY : C_MUTED)
+          .borderRadius(12)
+          .enabled(this.canSubmitWorkbenchBlock(this.workbenchActiveBlock))
+          .onClick(() => {
+            this.submitWorkbenchBlock(this.workbenchActiveBlock);
+          });
+      } else if (this.workbenchActiveBlock.kind === 'plan-confirm') {
+        Row({ space: 10 }) {
+          Button('修改')
+            .layoutWeight(1)
+            .height(44)
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(C_FOREGROUND)
+            .backgroundColor(C_MUTED)
+            .borderRadius(12)
+            .enabled(this.workbenchReady)
+            .onClick(() => {
+              this.composerInputVisible = true;
+              this.dismissWorkbench();
+            });
+
+          Button('确认创建')
+            .layoutWeight(1)
+            .height(44)
+            .fontSize(14)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF')
+            .backgroundColor(this.canSubmitWorkbenchBlock(this.workbenchActiveBlock) ? C_PRIMARY : C_MUTED)
+            .borderRadius(12)
+            .enabled(this.canSubmitWorkbenchBlock(this.workbenchActiveBlock))
+            .onClick(() => {
+              this.submitWorkbenchBlock(this.workbenchActiveBlock);
+            });
+        }
+        .width('100%');
+      } else if (this.workbenchActiveBlock.kind === 'exec-summary') {
+        Button('发一张图片试试')
+          .width('100%')
+          .height(44)
+          .fontSize(15)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#FFFFFF')
+          .backgroundColor(this.workbenchReady && this.chatHealthOkState && this.pendingRunCountState === 0 ? C_PRIMARY : C_MUTED)
+          .borderRadius(12)
+          .enabled(this.workbenchReady && this.chatHealthOkState && this.pendingRunCountState === 0)
+          .onClick(() => {
+            this.launchSummaryCta();
+          });
+      } else {
+        Button(this.pendingRunCountState > 0 ? '正在运行…' : '完成，返回对话')
+          .width('100%')
+          .height(44)
+          .fontSize(15)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(C_FOREGROUND)
+          .backgroundColor(C_MUTED)
+          .borderRadius(12)
+          .enabled(this.canDismissWorkbench())
+          .onClick(() => {
+            this.dismissWorkbench();
+          });
+      }
+    }
+    .width('100%')
+    .padding({ left: 20, right: 20, top: 12, bottom: 18 })
+    .backgroundColor(C_CARD)
+    .borderWidth({ top: 1 })
+    .borderColor(C_BORDER)
+    .opacity(this.workbenchReady ? 1 : 0)
+    .translate({ y: this.workbenchReady ? 0 : 10 });
   }
 
   @Builder EmptyState() {
@@ -1010,6 +1380,9 @@ export struct ChatPage {
 
     if (launcherPrefix.length > 0) {
       this.viewModel.sendChat(`${launcherPrefix} ${message}`, this.chatThinkingLevelState, [], `${launcherIcon} ${message}`.trim());
+      if (/^\/genskills?$/i.test(launcherPrefix)) {
+        this.presentPendingGenSkillWorkbench(message);
+      }
       return;
     }
 
@@ -1022,8 +1395,7 @@ export struct ChatPage {
     }
     this.messageText = '';
     this.clearSkillLauncher();
-    this.suppressComposerInputFocusRestore();
-    this.viewModel.sendChat('/new', this.chatThinkingLevelState, [], '🆕 创建新会话');
+    this.viewModel.createChatSession();
   }
 
   private clearSkillLauncher(): void {
@@ -1081,6 +1453,226 @@ export struct ChatPage {
     return existing;
   }
 
+  private isWorkbenchKind(kind: string): boolean {
+    return kind === 'clarify-question' || kind === 'approach-proposal' || kind === 'plan-confirm'
+      || kind === 'skill-create' || kind === 'exec-summary';
+  }
+
+  private hasActiveWorkbenchBlock(): boolean {
+    for (let i = this.flowBlocksState.length - 1; i >= 0; i--) {
+      if (this.isWorkbenchKind(this.flowBlocksState[i].kind)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private hasPendingGenSkillWorkbench(): boolean {
+    return this.pendingGenSkillWorkbenchOpen && this.pendingGenSkillWorkbenchToken.length > 0;
+  }
+
+  private activeWorkbenchBlock(): UIBlock {
+    for (let i = this.flowBlocksState.length - 1; i >= 0; i--) {
+      if (this.isWorkbenchKind(this.flowBlocksState[i].kind)) {
+        return this.flowBlocksState[i];
+      }
+    }
+    return this.emptyWorkbenchBlock;
+  }
+
+  private activeWorkbenchBlockToken(): string {
+    const block = this.activeWorkbenchBlock();
+    if (!this.isWorkbenchKind(block.kind)) {
+      return '';
+    }
+    let optionSignature = '';
+    for (let i = 0; i < block.options.length; i++) {
+      optionSignature += '|' + block.options[i].id + ':' + block.options[i].label;
+    }
+    return block.kind + '|' + block.phase + '|' + block.question + '|' + block.taskTitle
+      + '|' + String(block.questionIndex) + optionSignature + '|' + (block.approved ? '1' : '0')
+      + '|' + String(block.steps.length) + '|' + String(block.skillPaths.length);
+  }
+
+  private refreshWorkbenchState(): void {
+    const token = this.activeWorkbenchBlockToken();
+    if (this.hasPendingGenSkillWorkbench()) {
+      const isPreviousActiveBlock = token.length > 0 && token === this.pendingGenSkillPreviousWorkbenchToken;
+      if (token.length === 0 || (isPreviousActiveBlock && this.pendingRunCountState > 0)) {
+        if (this.workbenchBlockToken !== this.pendingGenSkillWorkbenchToken) {
+          this.workbenchBlockToken = this.pendingGenSkillWorkbenchToken;
+          this.workbenchSkipThinking = false;
+          this.workbenchReady = false;
+          this.workbenchSelectedId = '';
+          this.workbenchSelectedLabel = '';
+          this.workbenchActiveBlock = this.emptyWorkbenchBlock;
+          this.dismissedWorkbenchToken = '';
+          this.setWorkbenchOpen(true);
+        }
+        return;
+      }
+    }
+    if (token.length === 0) {
+      if (this.pendingGenSkillWorkbenchOpen && this.pendingRunCountState === 0) {
+        this.clearPendingGenSkillWorkbench();
+      }
+      this.workbenchReady = false;
+      this.workbenchBlockToken = '';
+      this.workbenchSelectedId = '';
+      this.workbenchSelectedLabel = '';
+      this.workbenchActiveBlock = this.emptyWorkbenchBlock;
+      this.setWorkbenchOpen(false);
+      return;
+    }
+    this.clearPendingGenSkillWorkbench();
+    this.workbenchActiveBlock = this.activeWorkbenchBlock();
+    if (token !== this.workbenchBlockToken) {
+      // 已编排过的 token（再次打开同一阶段）→ 跳过思考态直达就绪。
+      const alreadySettled = this.settledWorkbenchTokens.has(token);
+      this.workbenchBlockToken = token;
+      this.workbenchSkipThinking = alreadySettled;
+      this.workbenchReady = alreadySettled;
+      this.workbenchSelectedId = '';
+      this.workbenchSelectedLabel = '';
+      this.settledWorkbenchTokens.add(token);
+      if (token !== this.dismissedWorkbenchToken) {
+        this.setWorkbenchOpen(true);
+      }
+      // workbenchReady 由 PhaseStage 的 onReady 在编排结束时翻转。
+    }
+  }
+
+  private dismissWorkbench(): void {
+    if (!this.canDismissWorkbench()) {
+      return;
+    }
+    this.dismissedWorkbenchToken = this.workbenchBlockToken;
+    this.setWorkbenchOpen(false);
+  }
+
+  private setWorkbenchOpen(open: boolean): void {
+    this.workbenchOpen = open;
+    this.publishWorkbenchVisibility(open && (this.hasActiveWorkbenchBlock() || this.hasPendingGenSkillWorkbench()));
+  }
+
+  private publishWorkbenchVisibility(open: boolean): void {
+    this.chatWorkbenchOpen = open;
+  }
+
+  private canDismissWorkbench(): boolean {
+    const phase = this.currentWorkflowPhase();
+    if (this.pendingRunCountState > 0 && (phase === 'create' || phase === 'execute')) {
+      return false;
+    }
+    return true;
+  }
+
+  private canSubmitWorkbenchBlock(block: UIBlock): boolean {
+    if (!this.workbenchReady || !this.chatHealthOkState || this.pendingRunCountState > 0) {
+      return false;
+    }
+    if (block.kind === 'clarify-question' || block.kind === 'approach-proposal') {
+      return this.currentWorkbenchSelection().length > 0;
+    }
+    return block.kind === 'plan-confirm';
+  }
+
+  private currentWorkbenchSelection(): string {
+    if (this.workbenchSelectedId.length > 0) {
+      return this.workbenchSelectedId;
+    }
+    return '';
+  }
+
+  private currentWorkbenchSelectionLabel(block: UIBlock): string {
+    if (this.workbenchSelectedLabel.length > 0) {
+      return this.workbenchSelectedLabel;
+    }
+    const selected = this.currentWorkbenchSelection();
+    if (block.kind === 'clarify-question') {
+      for (let i = 0; i < block.options.length; i++) {
+        if (block.options[i].id === selected) {
+          return block.options[i].label;
+        }
+      }
+    }
+    return selected;
+  }
+
+  private submitWorkbenchBlock(block: UIBlock): void {
+    if (!this.canSubmitWorkbenchBlock(block)) {
+      return;
+    }
+    if (block.kind === 'clarify-question') {
+      this.sendFlowOption(this.currentWorkbenchSelectionLabel(block));
+      return;
+    }
+    if (block.kind === 'approach-proposal') {
+      this.sendFlowOption(this.currentWorkbenchSelection());
+      return;
+    }
+    if (block.kind === 'plan-confirm') {
+      this.sendFlowOption('可以');
+    }
+  }
+
+  private presentPendingGenSkillWorkbench(message: string): void {
+    const seed = (message || '').trim();
+    this.pendingGenSkillPreviousWorkbenchToken = this.activeWorkbenchBlockToken();
+    this.pendingGenSkillWorkbenchOpen = true;
+    this.pendingGenSkillWorkbenchToken = 'pending-genskill|' + this.chatSessionKeyState + '|' + String(Date.now()) + '|' + seed;
+    this.dismissedWorkbenchToken = '';
+    this.workbenchBlockToken = this.pendingGenSkillWorkbenchToken;
+    this.workbenchActiveBlock = this.emptyWorkbenchBlock;
+    this.workbenchSelectedId = '';
+    this.workbenchSelectedLabel = '';
+    this.workbenchSkipThinking = false;
+    this.workbenchReady = false;
+    this.setWorkbenchOpen(true);
+  }
+
+  private clearPendingGenSkillWorkbench(): void {
+    this.pendingGenSkillWorkbenchOpen = false;
+    this.pendingGenSkillWorkbenchToken = '';
+    this.pendingGenSkillPreviousWorkbenchToken = '';
+  }
+
+  private workbenchTitle(phase: string): string {
+    switch (phase) {
+      case 'clarify': return '澄清你的意图';
+      case 'customize': return '定制专属任务';
+      case 'create': return '创建技能';
+      case 'execute': return '执行技能';
+      default: return 'Agent 工作流';
+    }
+  }
+
+  private workbenchSubtitle(phase: string): string {
+    switch (phase) {
+      case 'clarify': return '回答几个问题，让我准确理解你的需求';
+      case 'customize': return '确认任务参数，生成你的专属流程';
+      case 'create': return '正在为你撰写可复用的技能文件';
+      case 'execute': return '技能运行中，你可以查看进展';
+      default: return '结构化任务工作台';
+    }
+  }
+
+  private launchSummaryCta(): void {
+    if (!this.chatHealthOkState || this.pendingRunCountState > 0) {
+      return;
+    }
+    const service = new PhotoCaptureService();
+    service.pickFromAlbum().then((result: PhotoResult | null) => {
+      if (result === null) {
+        return;
+      }
+      service.obtainPhotoToProcess(result);
+      this.dismissWorkbench();
+    }).catch((error: Error) => {
+      this.chatErrorState = error instanceof Error ? error.message : 'Photo picker failed.';
+    });
+  }
+
   private syncChatState(): void {
     const wasPending = this.pendingRunCountState > 0;
     this.chatMessagesState = [...this.viewModel.chatMessages];
@@ -1095,8 +1687,8 @@ export struct ChatPage {
     this.pendingInteractionsState = [...this.viewModel.chatPendingInteractions];
     this.flowBlocksState = [...this.viewModel.chatFlow.blocks];
     this.flowPhaseState = this.viewModel.chatFlow.finalPhase;
-    this.flowTotalQuestionsState = this.viewModel.chatFlow.totalQuestions;
     this.latestAssistantChoiceOptionsState = this.pendingInteractionsState.length === 0 ? this.extractChoiceOptions(this.latestAssistantText()) : [];
+    this.refreshWorkbenchState();
     if (wasPending && this.pendingRunCountState === 0) {
       this.restoreComposerInputAfterRun();
     }

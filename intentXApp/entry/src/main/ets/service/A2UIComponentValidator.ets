@@ -1,6 +1,6 @@
 /**
  * A2UIComponentValidator — validate one component object from an updateComponents
- * message against the intentx.app:cards@1 catalog. Emits precise path+message
+ * message against the genskill.cards@1 catalog. Emits precise path+message
  * errors (directive 3) so the caller can ask the LLM to regenerate.
  *
  * Catalog: docs/a2ui/intentx-cards-catalog@1.json
@@ -74,7 +74,12 @@ export class A2UIComponentValidator {
   }
 
   private static validateApproach(comp: Record<string, Object>, path: string, errors: A2UIValidationError[]): void {
-    A2UIComponentValidator.requirePhase(comp, 'clarify', path, errors);
+    // ApproachProposal is the close of the clarify phase; the emit-guide labels it
+    // phase:"clarify", but models (incl. Claude) overwhelmingly write phase:"approach"
+    // because the component is literally named ApproachProposal. The component name
+    // already disambiguates the semantics, so accept either rather than rejecting the
+    // whole card (which would drop it from the workbench and leak A/B/C as plain text).
+    A2UIComponentValidator.requirePhaseOneOf(comp, ['clarify', 'approach'], path, errors);
     const apps = A2UIComponentValidator.arr(comp, 'approaches');
     if (apps === null || apps.length < 2 || apps.length > 3) {
       errors.push(new A2UIValidationError(path + '/approaches', 'ApproachProposal requires 2-3 approaches.'));
@@ -152,6 +157,14 @@ export class A2UIComponentValidator {
     if (phase !== expected) {
       errors.push(new A2UIValidationError(path + '/phase',
         'phase must be "' + expected + '" for this component (got "' + phase + '").'));
+    }
+  }
+
+  private static requirePhaseOneOf(comp: Record<string, Object>, accepted: string[], path: string, errors: A2UIValidationError[]): void {
+    const phase = A2UIComponentValidator.str(comp, 'phase');
+    if (accepted.indexOf(phase) < 0) {
+      errors.push(new A2UIValidationError(path + '/phase',
+        'phase must be one of "' + accepted.join('"/"') + '" for this component (got "' + phase + '").'));
     }
   }
 
